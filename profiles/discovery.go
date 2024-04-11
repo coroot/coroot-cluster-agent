@@ -70,7 +70,7 @@ func (p *Pod) delTarget() ScrapeTarget {
 	}
 }
 
-func k8sDiscovery(ch chan<- ScrapeTarget) error {
+func k8sDiscovery(ch chan<- ScrapeTarget, stopCh chan struct{}) error {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return err
@@ -105,6 +105,6 @@ func k8sDiscovery(ch chan<- ScrapeTarget) error {
 			}
 		},
 	})
-	go informer.Run(make(chan struct{}))
+	go informer.Run(stopCh)
 	return nil
 }

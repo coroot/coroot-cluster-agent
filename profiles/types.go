@@ -22,14 +22,16 @@ var (
 	goProfileTypes = []string{GoProfileProfile, GoProfileHeap, GoProfileGoroutine, GoProfileMutex, GoProfileBlock}
 )
 
-type Stack []string
+type ProfileKey struct {
+	ServiceName string
+	LabelsHash  uint64
+	ProfileType string
+}
 
-func (s Stack) Hash() uint64 {
-	h := fnv.New64a()
-	for _, l := range s {
-		_, _ = h.Write([]byte(l))
-	}
-	return h.Sum64()
+type ScrapeTarget struct {
+	Address     string
+	ServiceName string
+	Labels      Labels
 }
 
 type Labels map[string]string
@@ -49,16 +51,4 @@ func (ls Labels) Hash() uint64 {
 		_, _ = h.Write([]byte(ls[k]))
 	}
 	return h.Sum64()
-}
-
-type ProfileKey struct {
-	ServiceName string
-	LabelsHash  uint64
-	ProfileType string
-}
-
-type ScrapeTarget struct {
-	Address     string
-	ServiceName string
-	Labels      Labels
 }

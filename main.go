@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/coroot/coroot-cluster-agent/clickhouse"
 	"github.com/coroot/coroot-cluster-agent/profiles"
 	"github.com/gorilla/mux"
 	"k8s.io/klog"
@@ -14,7 +13,6 @@ import (
 
 var (
 	version = "unknown"
-	name    = "CorootClusterAgent/" + version
 )
 
 func main() {
@@ -24,11 +22,6 @@ func main() {
 		cfgPath = os.Args[1]
 	}
 	cfg, err := LoadConfig(cfgPath)
-	if err != nil {
-		klog.Exitln(err)
-	}
-
-	cl, err := clickhouse.NewClient(cfg.Clickhouse, name)
 	if err != nil {
 		klog.Exitln(err)
 	}
@@ -44,11 +37,11 @@ func main() {
 	router.PathPrefix("/debug/pprof/").Handler(http.DefaultServeMux)
 	router.HandleFunc("/health", health).Methods(http.MethodGet)
 
-	ps, err := profiles.NewProfiles(cfg.Profiles, cl, name)
+	ps, err := profiles.NewProfiles(cfg.Profiles, cfg.ApiKey)
 	if err != nil {
 		klog.Exitln(err)
 	}
-	router.HandleFunc("/profiles", ps.Handler).Methods(http.MethodPost)
+	defer ps.Close()
 
 	klog.Infoln("listening on", cfg.Listen)
 	klog.Exitln(http.ListenAndServe(cfg.Listen, router))

@@ -8,7 +8,7 @@ ARG VERSION=unknown
 RUN go build -mod=readonly -ldflags "-X main.version=$VERSION" -o /tmp/coroot-cluster-agent .
 
 
-FROM debian:buster
+FROM debian:bullseye
 RUN apt update && apt install -y ca-certificates && apt clean
 
 COPY --from=builder /tmp/coroot-cluster-agent /coroot-cluster-agent

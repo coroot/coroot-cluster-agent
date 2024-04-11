@@ -1,8 +1,10 @@
 package profiles
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -10,9 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ClickHouse/ch-go"
-	"github.com/ClickHouse/ch-go/proto"
-	"github.com/coroot/coroot-cluster-agent/clickhouse"
 	"github.com/google/pprof/profile"
 	"k8s.io/klog"
 )
@@ -22,43 +21,50 @@ const (
 )
 
 type Config struct {
-	TTLDays int `yaml:"ttl_days"`
-	Scrape  struct {
+	Endpoint string `yaml:"endpoint"`
+	Scrape   struct {
 		Interval time.Duration `yaml:"interval"`
 		Timeout  time.Duration `yaml:"timeout"`
 	}
 }
 
 type Profiles struct {
-	cfg        Config
-	clickhouse *clickhouse.Client
+	cfg    Config
+	apiKey string
+
 	httpClient *http.Client
-	userAgent  string
 
 	targets     map[string]ScrapeTarget
 	targetsLock sync.Mutex
 
 	prevCache     map[ProfileKey]map[uint64]int64
 	prevCacheLock sync.Mutex
+
+	k8sDiscoveryStopCh chan struct{}
 }
 
-func NewProfiles(cfg Config, cl *clickhouse.Client, userAgent string) (*Profiles, error) {
-	ps := &Profiles{
-		cfg:        cfg,
-		clickhouse: cl,
-		httpClient: &http.Client{},
-		userAgent:  userAgent,
-		prevCache:  map[ProfileKey]map[uint64]int64{},
-		targets:    map[string]ScrapeTarget{},
+func NewProfiles(cfg Config, apiKey string) (*Profiles, error) {
+	if cfg.Endpoint == "" {
+		return nil, fmt.Errorf("empty endpoint")
 	}
-	err := ps.createTables()
+	_, err := url.Parse(cfg.Endpoint)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid endpoint: %s", err)
+	}
+	klog.Infoln("profiles endpoint:", cfg.Endpoint)
+
+	ps := &Profiles{
+		cfg:                cfg,
+		apiKey:             apiKey,
+		httpClient:         &http.Client{},
+		prevCache:          map[ProfileKey]map[uint64]int64{},
+		targets:            map[string]ScrapeTarget{},
+		k8sDiscoveryStopCh: make(chan struct{}),
 	}
 
 	targetsCh := make(chan ScrapeTarget)
 	go ps.registerScrapeTargets(targetsCh)
-	err = k8sDiscovery(targetsCh)
+	err = k8sDiscovery(targetsCh, ps.k8sDiscoveryStopCh)
 	if err != nil {
 		close(targetsCh)
 		return nil, err
@@ -69,48 +75,8 @@ func NewProfiles(cfg Config, cl *clickhouse.Client, userAgent string) (*Profiles
 	return ps, nil
 }
 
-func (ps *Profiles) Handler(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-	var profileSource Source
-	var serviceName string
-	labels := Labels{}
-	for k, vs := range query {
-		if len(vs) != 1 {
-			continue
-		}
-		v := vs[0]
-		if k == "profile.source" {
-			profileSource = Source(v)
-			continue
-		}
-		if k == "service.name" {
-			serviceName = v
-			continue
-		}
-		labels[k] = v
-	}
-	if profileSource == "" {
-		klog.Errorln("profile.source is empty")
-		http.Error(w, "profile.source is empty", 400)
-		return
-	}
-	if serviceName == "" {
-		klog.Errorln("service.name is empty")
-		http.Error(w, "service.name is empty", 400)
-		return
-	}
-	p, err := profile.Parse(r.Body)
-	if err != nil {
-		klog.Errorln(err)
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	err = ps.save(r.Context(), serviceName, labels, profileSource, "", p)
-	if err != nil {
-		klog.Errorln(err)
-		http.Error(w, err.Error(), 500)
-		return
-	}
+func (ps *Profiles) Close() {
+	close(ps.k8sDiscoveryStopCh)
 }
 
 func (ps *Profiles) registerScrapeTargets(ch <-chan ScrapeTarget) {
@@ -144,6 +110,7 @@ func (ps *Profiles) scrapeLoop() {
 		return
 	}
 	klog.Infoln("scrape interval:", ps.cfg.Scrape.Interval)
+
 	for {
 		start := time.Now()
 		var targets []ScrapeTarget
@@ -152,42 +119,50 @@ func (ps *Profiles) scrapeLoop() {
 			targets = append(targets, t)
 		}
 		ps.targetsLock.Unlock()
+
 		var wg sync.WaitGroup
-		for _, target := range targets {
-			u, err := url.Parse("http://" + target.Address)
+		for _, t := range targets {
+			addr, err := url.Parse("http://" + t.Address)
 			if err != nil {
 				klog.Errorln(err)
 				continue
 			}
 			for _, profileType := range goProfileTypes {
 				wg.Add(1)
-				go func(st ScrapeTarget, pt string) {
+				go func(sn string, ls Labels, u *url.URL, pt string) {
 					defer wg.Done()
 					p, err := ps.scrape(pt, u)
 					if err != nil {
 						klog.Errorln("failed to scrape:", err)
 						return
 					}
+					if len(p.Sample) == 0 {
+						return
+					}
 					if p.DurationNanos == 0 {
 						p.DurationNanos = ps.cfg.Scrape.Interval.Nanoseconds()
 					}
-					err = ps.save(context.TODO(), st.ServiceName, st.Labels, SourceGo, pt, p)
+
+					ps.diff(sn, ls, SourceGo, pt, p)
+
+					err = ps.upload(sn, ls, p)
 					if err != nil {
-						klog.Errorln("failed to save:", err)
+						klog.Errorln("failed to upload:", err)
 						return
 					}
-				}(target, profileType)
+				}(t.ServiceName, t.Labels, addr, profileType)
 			}
 		}
 		wg.Wait()
+
 		duration := time.Since(start)
 		klog.Infof("scraped %d targets in %s", len(targets), duration.Truncate(time.Millisecond))
 		time.Sleep(ps.cfg.Scrape.Interval - duration)
 	}
 }
 
-func (ps *Profiles) scrape(profileType string, target *url.URL) (*profile.Profile, error) {
-	u := target.JoinPath("/debug/pprof", profileType)
+func (ps *Profiles) scrape(profileType string, addr *url.URL) (*profile.Profile, error) {
+	u := addr.JoinPath("/debug/pprof", profileType)
 	timeout := ps.cfg.Scrape.Timeout
 	if profileType == GoProfileProfile {
 		timeout += time.Duration(goCPUProfileSeconds) * time.Second
@@ -201,15 +176,13 @@ func (ps *Profiles) scrape(profileType string, target *url.URL) (*profile.Profil
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", ps.userAgent)
 	resp, err := ps.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("%d: %s", resp.StatusCode, string(data))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%d: %s", resp.StatusCode, resp.Status)
 	}
 	p, err := profile.Parse(resp.Body)
 	if err != nil {
@@ -218,34 +191,14 @@ func (ps *Profiles) scrape(profileType string, target *url.URL) (*profile.Profil
 	return p, nil
 }
 
-func (ps *Profiles) save(ctx context.Context, serviceName string, labels Labels, source Source, profileType string, p *profile.Profile) error {
-	end := time.Unix(0, p.TimeNanos)
-	start := end.Add(-time.Duration(p.DurationNanos))
-
-	colServiceName := new(proto.ColStr).LowCardinality()
-	colType := new(proto.ColStr).LowCardinality()
-	var colValue proto.ColInt64
-	var colStackHash proto.ColUInt64
-	colStart := new(proto.ColDateTime64).WithPrecision(proto.PrecisionNano)
-	colEnd := new(proto.ColDateTime64).WithPrecision(proto.PrecisionNano)
-	colLabels := proto.NewMap[string, string](new(proto.ColStr).LowCardinality(), new(proto.ColStr))
-	colStack := new(proto.ColStr).Array()
-
-	profileKey := ProfileKey{
-		ServiceName: serviceName,
-		LabelsHash:  labels.Hash(),
-	}
+func (ps *Profiles) diff(serviceName string, labels Labels, source Source, profileType string, p *profile.Profile) {
 	for i, st := range p.SampleType {
-		typ := st.Type
-		if profileType != "" {
-			typ = profileType + "_" + typ
-		}
-		typ = fmt.Sprintf("%s:%s:%s", source, typ, st.Unit)
 		cumulative := false
 		switch profileType {
 		case GoProfileProfile:
 			switch st.Type {
 			case "samples":
+				st.Type = ""
 				continue
 			}
 		case GoProfileHeap:
@@ -257,85 +210,106 @@ func (ps *Profiles) save(ctx context.Context, serviceName string, labels Labels,
 			cumulative = true
 		}
 
-		hasPrev := true
-		if cumulative {
-			profileKey.ProfileType = typ
-			ps.prevCacheLock.Lock()
-			if ps.prevCache[profileKey] == nil {
-				ps.prevCache[profileKey] = map[uint64]int64{}
-				hasPrev = false
-			}
-			ps.prevCacheLock.Unlock()
-		}
+		st.Type = fmt.Sprintf("%s:%s_%s:%s", source, profileType, st.Type, st.Unit)
 
-		values := map[uint64]int64{}
-		stacks := map[uint64]Stack{}
+		samples := map[uint64]*profile.Sample{}
 		for _, s := range p.Sample {
-			var stack Stack
+			h := fnv.New64a()
 			for _, location := range s.Location {
 				for _, line := range location.Line {
 					if line.Function == nil {
 						continue
 					}
-					l := fmt.Sprintf("%s %s:%d", line.Function.Name, line.Function.Filename, line.Line)
-					stack = append(stack, l)
+					_, _ = h.Write([]byte(line.Function.Name))
+					_, _ = h.Write([]byte(line.Function.Filename))
+					_, _ = h.Write([]byte(fmt.Sprintf("%d", line.Line)))
 				}
 			}
-			stackHash := stack.Hash()
-			values[stackHash] += s.Value[i]
-			stacks[stackHash] = stack
-		}
-
-		if cumulative {
-			ps.prevCacheLock.Lock()
-		}
-		for stackHash, value := range values {
-			if cumulative {
-				prev := ps.prevCache[profileKey][stackHash]
-				ps.prevCache[profileKey][stackHash] = value
-				if !hasPrev {
-					continue
-				}
-				if value-prev >= 0 {
-					value -= prev
-				}
+			hash := h.Sum64()
+			if samples[hash] == nil {
+				samples[hash] = s
+			} else {
+				samples[hash].Value[i] += s.Value[i]
 			}
-			colServiceName.Append(serviceName)
-			colType.Append(typ)
-			colStart.Append(start)
-			colEnd.Append(end)
-			colLabels.Append(labels)
-			colValue.Append(value)
-			colStackHash.Append(stackHash)
-			colStack.Append(stacks[stackHash])
 		}
-		if cumulative {
-			ps.prevCacheLock.Unlock()
-		}
-	}
 
-	input := proto.Input{
-		{Name: "ServiceName", Data: colServiceName},
-		{Name: "Hash", Data: colStackHash},
-		{Name: "LastSeen", Data: colEnd},
-		{Name: "Stack", Data: colStack},
+		if len(samples) < len(p.Sample) {
+			p.Sample = p.Sample[:0]
+			for _, s := range samples {
+				p.Sample = append(p.Sample, s)
+			}
+			p.Compact()
+		}
+
+		if !cumulative {
+			continue
+		}
+
+		hasPrev := true
+		key := ProfileKey{
+			ServiceName: serviceName,
+			LabelsHash:  labels.Hash(),
+			ProfileType: st.Type,
+		}
+		ps.prevCacheLock.Lock()
+		if ps.prevCache[key] == nil {
+			ps.prevCache[key] = map[uint64]int64{}
+			hasPrev = false
+		}
+		for hash, s := range samples {
+			value := s.Value[i]
+			prev := ps.prevCache[key][hash]
+			ps.prevCache[key][hash] = value
+			if !hasPrev {
+				continue
+			}
+			if value-prev >= 0 {
+				value -= prev
+			}
+			s.Value[i] = value
+		}
+		ps.prevCacheLock.Unlock()
 	}
-	err := ps.clickhouse.Do(ctx, ch.Query{Body: input.Into("profiling_stacks"), Input: input})
+}
+
+func (ps *Profiles) upload(serviceName string, labels Labels, p *profile.Profile) error {
+	u, err := url.Parse(ps.cfg.Endpoint)
 	if err != nil {
 		return err
 	}
-	input = proto.Input{
-		{Name: "ServiceName", Data: colServiceName},
-		{Name: "Type", Data: colType},
-		{Name: "Start", Data: colStart},
-		{Name: "End", Data: colEnd},
-		{Name: "Labels", Data: colLabels},
-		{Name: "StackHash", Data: colStackHash},
-		{Name: "Value", Data: colValue},
+	q := u.Query()
+	for k, v := range labels {
+		q.Set(k, v)
 	}
-	err = ps.clickhouse.Do(ctx, ch.Query{Body: input.Into("profiling_samples"), Input: input})
+	q.Set("service.name", serviceName)
+	u.RawQuery = q.Encode()
+
+	buf := bytes.NewBuffer(nil)
+	err = p.Write(buf)
 	if err != nil {
 		return err
 	}
+
+	req, err := http.NewRequest(http.MethodPost, u.String(), buf)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("X-Api-Key", ps.apiKey)
+
+	resp, err := ps.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%d: %s", resp.StatusCode, string(respBody))
+	}
+
 	return nil
 }
