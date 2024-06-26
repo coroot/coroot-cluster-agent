@@ -17,7 +17,7 @@ var (
 	MetricsScrapeTimeout  = kingpin.Flag("metrics-scrape-timeout", "").Envar("METRICS_SCRAPE_TIMEOUT").Default("10s").Duration()
 	MetricsWALDir         = kingpin.Flag("metrics-wal-dir", "").Envar("METRICS_WAL_DIR").Default("/tmp").String()
 
-	ProfilesScrapeInterval = kingpin.Flag("profiles-scrape-interval", "").Envar("PROFILES_SCRAPE_INTERVAL").Duration()
+	ProfilesScrapeInterval = kingpin.Flag("profiles-scrape-interval", "").Envar("PROFILES_SCRAPE_INTERVAL").Default("60s").Duration()
 	ProfilesScrapeTimeout  = kingpin.Flag("profiles-scrape-timeout", "").Envar("PROFILES_SCRAPE_TIMEOUT").Default("10s").Duration()
 )
 
