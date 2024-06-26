@@ -12,6 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coroot/coroot-cluster-agent/common"
+	"github.com/coroot/coroot-cluster-agent/discovery"
+	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/google/pprof/profile"
 	"k8s.io/klog"
 )
@@ -20,17 +23,11 @@ const (
 	goCPUProfileSeconds = 10
 )
 
-type Config struct {
-	Endpoint string `yaml:"endpoint"`
-	Scrape   struct {
-		Interval time.Duration `yaml:"interval"`
-		Timeout  time.Duration `yaml:"timeout"`
-	}
-}
-
 type Profiles struct {
-	cfg    Config
-	apiKey string
+	endpoint       *url.URL
+	apiKey         string
+	scrapeInterval time.Duration
+	scrapeTimeout  time.Duration
 
 	httpClient *http.Client
 
@@ -40,43 +37,39 @@ type Profiles struct {
 	prevCache     map[ProfileKey]map[uint64]int64
 	prevCacheLock sync.Mutex
 
-	k8sDiscoveryStopCh chan struct{}
+	k8sPodEvents <-chan discovery.PodEvent
 }
 
-func NewProfiles(cfg Config, apiKey string) (*Profiles, error) {
-	if cfg.Endpoint == "" {
-		return nil, fmt.Errorf("empty endpoint")
+func NewProfiles() (*Profiles, error) {
+	if *flags.ProfilesScrapeInterval == 0 {
+		klog.Infoln("scrape interval is not set, disabling the scraper")
+		return nil, nil
 	}
-	_, err := url.Parse(cfg.Endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("invalid endpoint: %s", err)
-	}
-	klog.Infoln("profiles endpoint:", cfg.Endpoint)
 
 	ps := &Profiles{
-		cfg:                cfg,
-		apiKey:             apiKey,
-		httpClient:         &http.Client{},
-		prevCache:          map[ProfileKey]map[uint64]int64{},
-		targets:            map[string]ScrapeTarget{},
-		k8sDiscoveryStopCh: make(chan struct{}),
+		endpoint:       (*flags.CorootURL).JoinPath("/v1/profiles"),
+		apiKey:         *flags.APIKey,
+		scrapeInterval: *flags.ProfilesScrapeInterval,
+		scrapeTimeout:  *flags.ProfilesScrapeTimeout,
+		httpClient:     &http.Client{},
+		prevCache:      map[ProfileKey]map[uint64]int64{},
+		targets:        map[string]ScrapeTarget{},
 	}
 
-	targetsCh := make(chan ScrapeTarget)
-	go ps.registerScrapeTargets(targetsCh)
-	err = k8sDiscovery(targetsCh, ps.k8sDiscoveryStopCh)
-	if err != nil {
-		close(targetsCh)
-		return nil, err
-	}
-
-	go ps.scrapeLoop()
+	klog.Infof("endpoint: %s, scrape interval: %s", ps.endpoint, ps.scrapeInterval)
 
 	return ps, nil
 }
 
-func (ps *Profiles) Close() {
-	close(ps.k8sDiscoveryStopCh)
+func (ps *Profiles) ListenPodEvents(events <-chan discovery.PodEvent) {
+	ps.k8sPodEvents = events
+}
+
+func (ps *Profiles) Start() {
+	targetsCh := make(chan ScrapeTarget)
+	go ps.registerScrapeTargets(targetsCh)
+	go k8sDiscovery(ps.k8sPodEvents, targetsCh)
+	go ps.scrapeLoop()
 }
 
 func (ps *Profiles) registerScrapeTargets(ch <-chan ScrapeTarget) {
@@ -105,12 +98,6 @@ func (ps *Profiles) registerScrapeTargets(ch <-chan ScrapeTarget) {
 }
 
 func (ps *Profiles) scrapeLoop() {
-	if ps.cfg.Scrape.Interval == 0 {
-		klog.Infoln("scrape interval is not set, disabling the scraper")
-		return
-	}
-	klog.Infoln("scrape interval:", ps.cfg.Scrape.Interval)
-
 	for {
 		start := time.Now()
 		var targets []ScrapeTarget
@@ -140,7 +127,7 @@ func (ps *Profiles) scrapeLoop() {
 						return
 					}
 					if p.DurationNanos == 0 {
-						p.DurationNanos = ps.cfg.Scrape.Interval.Nanoseconds()
+						p.DurationNanos = ps.scrapeInterval.Nanoseconds()
 					}
 
 					ps.diff(sn, ls, SourceGo, pt, p)
@@ -157,13 +144,13 @@ func (ps *Profiles) scrapeLoop() {
 
 		duration := time.Since(start)
 		klog.Infof("scraped %d targets in %s", len(targets), duration.Truncate(time.Millisecond))
-		time.Sleep(ps.cfg.Scrape.Interval - duration)
+		time.Sleep(ps.scrapeInterval - duration)
 	}
 }
 
 func (ps *Profiles) scrape(profileType string, addr *url.URL) (*profile.Profile, error) {
 	u := addr.JoinPath("/debug/pprof", profileType)
-	timeout := ps.cfg.Scrape.Timeout
+	timeout := ps.scrapeTimeout
 	if profileType == GoProfileProfile {
 		timeout += time.Duration(goCPUProfileSeconds) * time.Second
 		q := u.Query()
@@ -273,10 +260,7 @@ func (ps *Profiles) diff(serviceName string, labels Labels, source Source, profi
 }
 
 func (ps *Profiles) upload(serviceName string, labels Labels, p *profile.Profile) error {
-	u, err := url.Parse(ps.cfg.Endpoint)
-	if err != nil {
-		return err
-	}
+	u := *ps.endpoint
 	q := u.Query()
 	for k, v := range labels {
 		q.Set(k, v)
@@ -285,7 +269,7 @@ func (ps *Profiles) upload(serviceName string, labels Labels, p *profile.Profile
 	u.RawQuery = q.Encode()
 
 	buf := bytes.NewBuffer(nil)
-	err = p.Write(buf)
+	err := p.Write(buf)
 	if err != nil {
 		return err
 	}
@@ -295,7 +279,7 @@ func (ps *Profiles) upload(serviceName string, labels Labels, p *profile.Profile
 		return err
 	}
 
-	req.Header.Set("X-Api-Key", ps.apiKey)
+	common.SetAuthHeaders(req, ps.apiKey)
 
 	resp, err := ps.httpClient.Do(req)
 	if err != nil {
@@ -312,4 +296,31 @@ func (ps *Profiles) upload(serviceName string, labels Labels, p *profile.Profile
 	}
 
 	return nil
+}
+
+func k8sDiscovery(events <-chan discovery.PodEvent, targets chan<- ScrapeTarget) {
+	for e := range events {
+		switch e.Type {
+		case discovery.PodEventTypeAdd:
+			pod := Pod{Pod: e.Curr}
+			if pod.scrapeOn() && pod.scrapeAddress() != "" && pod.Running() {
+				targets <- pod.addTarget()
+			}
+		case discovery.PodEventTypeChange:
+			prevPod := Pod{Pod: e.Prev}
+			currPod := Pod{Pod: e.Curr}
+			if (prevPod.scrapeOn() && !currPod.scrapeOn()) || (prevPod.scrapePort() != "" && currPod.scrapePort() == "") {
+				targets <- prevPod.delTarget()
+			}
+			if currPod.scrapeOn() && currPod.scrapeAddress() != "" && currPod.Running() {
+				targets <- currPod.addTarget()
+			}
+
+		case discovery.PodEventTypeDelete:
+			pod := Pod{Pod: e.Curr}
+			if pod.scrapeOn() {
+				targets <- pod.delTarget()
+			}
+		}
+	}
 }

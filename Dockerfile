@@ -5,12 +5,12 @@ COPY go.sum .
 RUN go mod download
 COPY . .
 ARG VERSION=unknown
-RUN go build -mod=readonly -ldflags "-X main.version=$VERSION" -o /tmp/coroot-cluster-agent .
+RUN go build -mod=readonly -ldflags "-X main.version=$VERSION" -o coroot-cluster-agent .
 
 
 FROM debian:bullseye
 RUN apt update && apt install -y ca-certificates && apt clean
 
-COPY --from=builder /tmp/coroot-cluster-agent /coroot-cluster-agent
+COPY --from=builder /tmp/src/coroot-cluster-agent /usr/bin/coroot-cluster-agent
 
-ENTRYPOINT ["/coroot-cluster-agent", "config.yaml"]
+ENTRYPOINT ["coroot-cluster-agent"]
