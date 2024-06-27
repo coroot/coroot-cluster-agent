@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"errors"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -9,6 +10,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog"
 )
 
 type PodEventType int
@@ -41,6 +43,10 @@ type K8S struct {
 func NewK8S() (*K8S, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
+		if errors.Is(err, rest.ErrNotInCluster) {
+			klog.Infoln("not running inside a kubernetes cluster")
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -59,6 +65,9 @@ func NewK8S() (*K8S, error) {
 }
 
 func (k8s *K8S) Start() {
+	if len(k8s.subscribers) == 0 {
+		return
+	}
 	go k8s.start()
 }
 

@@ -37,11 +37,6 @@ func main() {
 		klog.Exitln(err)
 	}
 
-	k8s, err := discovery.NewK8S()
-	if err != nil {
-		klog.Exitln(err)
-	}
-
 	ms, err := metrics.NewMetrics()
 	if err != nil {
 		klog.Exitln(err)
@@ -51,20 +46,26 @@ func main() {
 		router.Handle("/metrics", ms.HttpHandler())
 	}
 
-	ps, err := profiles.NewProfiles()
-	if err != nil {
-		klog.Exitln(err)
-	}
-	if ps != nil {
-		k8s.Subscribe(ps)
-		ps.Start()
-	}
-
 	cu.Start()
 	defer cu.Stop()
 
-	k8s.Start()
-	defer k8s.Stop()
+	k8s, err := discovery.NewK8S()
+	if err != nil {
+		klog.Exitln(err)
+	}
+
+	if k8s != nil {
+		ps, err := profiles.NewProfiles()
+		if err != nil {
+			klog.Exitln(err)
+		}
+		if ps != nil {
+			k8s.Subscribe(ps)
+			ps.Start()
+		}
+		k8s.Start()
+		defer k8s.Stop()
+	}
 
 	klog.Infoln("listening on", *flags.ListenAddress)
 	klog.Exitln(http.ListenAndServe(*flags.ListenAddress, router))
