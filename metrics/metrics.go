@@ -135,13 +135,15 @@ func (ms *Metrics) stopExporter(config ExporterConfig) {
 }
 
 func (ms *Metrics) createCollector(config ExporterConfig) (prometheus.Collector, func(), error) {
+	timeout := ms.scrapeTimeout / 2
+
 	switch config.Type {
 
 	case model.ApplicationTypePostgres:
 		userPass := url.UserPassword(config.Credentials.Username, config.Credentials.Password)
 		query := url.Values{}
 		query.Set("connect_timeout", "1")
-		query.Set("statement_timeout", strconv.Itoa(int(ms.scrapeTimeout.Milliseconds())))
+		query.Set("statement_timeout", strconv.Itoa(int(timeout.Milliseconds())))
 		sslmode := config.Params["sslmode"]
 		if sslmode == "" {
 			sslmode = "disable"
@@ -157,7 +159,7 @@ func (ms *Metrics) createCollector(config ExporterConfig) (prometheus.Collector,
 	case model.ApplicationTypeMysql:
 		userPass := url.UserPassword(config.Credentials.Username, config.Credentials.Password)
 		query := url.Values{}
-		query.Set("timeout", fmt.Sprintf("%dms", ms.scrapeTimeout.Milliseconds()))
+		query.Set("timeout", fmt.Sprintf("%dms", timeout.Milliseconds()))
 		tls := config.Params["tls"]
 		if tls == "" {
 			tls = "false"
@@ -176,7 +178,7 @@ func (ms *Metrics) createCollector(config ExporterConfig) (prometheus.Collector,
 			User:                           config.Credentials.Username,
 			Password:                       config.Credentials.Password,
 			Namespace:                      "redis",
-			ConnectionTimeouts:             ms.scrapeTimeout,
+			ConnectionTimeouts:             timeout,
 			RedisMetricsOnly:               true,
 			ExcludeLatencyHistogramMetrics: true,
 		}
@@ -191,14 +193,14 @@ func (ms *Metrics) createCollector(config ExporterConfig) (prometheus.Collector,
 			config.Address(),
 			config.Credentials.Username,
 			config.Credentials.Password,
-			ms.scrapeTimeout,
+			timeout,
 		)
 		return collector, func() { _ = collector.Close() }, nil
 
 	case model.ApplicationTypeMemcached:
 		collector := memcached.New(
 			config.Address(),
-			ms.scrapeTimeout,
+			timeout,
 			level.NewFilter(&promLogger{l: logger.NewKlog(config.Address())}, level.AllowInfo()),
 			nil,
 		)
