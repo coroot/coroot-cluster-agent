@@ -10,6 +10,7 @@ import (
 	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/coroot/coroot-cluster-agent/metrics/aws"
 	"github.com/coroot/coroot-cluster-agent/metrics/mongo"
+	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
 	postgres "github.com/coroot/coroot-pg-agent/collector"
 	"github.com/coroot/coroot/model"
 	"github.com/coroot/logger"
@@ -147,7 +148,23 @@ func (ms *Metrics) createCollector(config ExporterConfig) (prometheus.Collector,
 		}
 		query.Set("sslmode", sslmode)
 		dsn := fmt.Sprintf("postgresql://%s@%s/postgres?%s", userPass, config.Address(), query.Encode())
-		collector, err := postgres.New(dsn, ms.scrapeTimeout, logger.NewKlog(config.Address()))
+		collector, err := postgres.New(dsn, ms.scrapeInterval, logger.NewKlog(config.Address()))
+		if err != nil {
+			return nil, nil, err
+		}
+		return collector, func() { _ = collector.Close() }, nil
+
+	case model.ApplicationTypeMysql:
+		userPass := url.UserPassword(config.Credentials.Username, config.Credentials.Password)
+		query := url.Values{}
+		query.Set("timeout", fmt.Sprintf("%dms", ms.scrapeTimeout.Milliseconds()))
+		tls := config.Params["tls"]
+		if tls == "" {
+			tls = "false"
+		}
+		query.Set("tls", tls)
+		dsn := fmt.Sprintf("%s@tcp(%s)/mysql?%s", userPass, config.Address(), query.Encode())
+		collector, err := mysql.New(dsn, logger.NewKlog(config.Address()), ms.scrapeInterval)
 		if err != nil {
 			return nil, nil, err
 		}
