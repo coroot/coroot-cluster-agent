@@ -140,7 +140,7 @@ func (ms *Metrics) createCollector(config ExporterConfig) (prometheus.Collector,
 	switch config.Type {
 
 	case model.ApplicationTypePostgres:
-		userPass := fmt.Sprintf("%s:%s", config.Credentials.Username, config.Credentials.Password)
+		userPass := url.UserPassword(config.Credentials.Username, config.Credentials.Password)
 		query := url.Values{}
 		query.Set("connect_timeout", "1")
 		query.Set("statement_timeout", strconv.Itoa(int(timeout.Milliseconds())))
