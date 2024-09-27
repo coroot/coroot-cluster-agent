@@ -70,16 +70,23 @@ func (ms *Metrics) runScraper() error {
 
 	tch := make(chan map[string][]*targetgroup.Group)
 	go scrapeManager.Run(tch)
+	targets := []model.LabelSet{
+		{
+			model.AddressLabel:  model.LabelValue(ms.listenAddr),
+			model.InstanceLabel: model.LabelValue(ms.listenAddr),
+		},
+	}
+	if ms.ksmAddr != "" {
+		targets = append(targets, model.LabelSet{
+			model.AddressLabel:  model.LabelValue(ms.ksmAddr),
+			model.InstanceLabel: model.LabelValue(ms.ksmAddr),
+		})
+	}
 	tch <- map[string][]*targetgroup.Group{
 		jobName: {
 			&targetgroup.Group{
-				Targets: []model.LabelSet{
-					{
-						model.AddressLabel:  model.LabelValue(ms.listenAddr),
-						model.InstanceLabel: model.LabelValue(ms.listenAddr),
-					},
-				},
-				Labels: model.LabelSet{model.JobLabel: jobName},
+				Targets: targets,
+				Labels:  model.LabelSet{model.JobLabel: jobName},
 			},
 		},
 	}

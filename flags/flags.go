@@ -19,6 +19,8 @@ var (
 
 	ProfilesScrapeInterval = kingpin.Flag("profiles-scrape-interval", "").Envar("PROFILES_SCRAPE_INTERVAL").Default("60s").Duration()
 	ProfilesScrapeTimeout  = kingpin.Flag("profiles-scrape-timeout", "").Envar("PROFILES_SCRAPE_TIMEOUT").Default("10s").Duration()
+
+	KubeStateMetricsAddress = kingpin.Flag("kube-state-metrics-address", "").Envar("KUBE_STATE_METRICS_ADDRESS").String()
 )
 
 func init() {

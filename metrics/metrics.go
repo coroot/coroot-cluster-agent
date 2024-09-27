@@ -26,6 +26,7 @@ type Metrics struct {
 	endpoint       *url.URL
 	apiKey         string
 	listenAddr     string
+	ksmAddr        string
 	scrapeInterval time.Duration
 	scrapeTimeout  time.Duration
 	walDir         string
@@ -47,6 +48,7 @@ func NewMetrics() (*Metrics, error) {
 		endpoint:       (*flags.CorootURL).JoinPath("/v1/metrics"),
 		apiKey:         *flags.APIKey,
 		listenAddr:     *flags.ListenAddress,
+		ksmAddr:        *flags.KubeStateMetricsAddress,
 		scrapeInterval: *flags.MetricsScrapeInterval,
 		scrapeTimeout:  *flags.MetricsScrapeTimeout,
 		walDir:         *flags.MetricsWALDir,
