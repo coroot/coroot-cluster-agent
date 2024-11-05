@@ -18,6 +18,7 @@ LABEL name="coroot-cluster-agent" \
 
 COPY LICENSE /licenses/LICENSE
 
+USER 65534:65534
 COPY --from=builder /tmp/src/coroot-cluster-agent /usr/bin/coroot-cluster-agent
 
 ENTRYPOINT ["coroot-cluster-agent"]
