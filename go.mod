@@ -6,10 +6,11 @@ require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
 	github.com/aws/aws-sdk-go v1.50.0
 	github.com/coroot/coroot v1.2.2-0.20240626085308-4f300e300f0f
-	github.com/coroot/coroot-pg-agent v1.2.6
+	github.com/coroot/coroot-pg-agent v1.2.7
 	github.com/coroot/logger v1.0.0
 	github.com/coroot/logparser v1.1.3
 	github.com/go-kit/log v0.2.1
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/google/pprof v0.0.0-20240409012703-83162a5b38cd
 	github.com/gorilla/mux v1.8.1
 	github.com/oliver006/redis_exporter v1.61.0
@@ -48,7 +49,6 @@ require (
 	github.com/go-openapi/jsonpointer v0.20.0 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.22.4 // indirect
-	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
@@ -62,7 +62,6 @@ require (
 	github.com/grobie/gomemcache v0.0.0-20230213081705-239240bbc445 // indirect
 	github.com/hako/durafmt v0.0.0-20210608085754-5c1018a4e16b // indirect
 	github.com/hashicorp/go-version v1.6.0 // indirect
-	github.com/imdario/mergo v0.3.16 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
@@ -87,7 +86,6 @@ require (
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/rogpeppe/go-internal v1.11.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
-	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.1.2 // indirect
