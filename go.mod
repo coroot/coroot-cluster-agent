@@ -1,6 +1,6 @@
 module github.com/coroot/coroot-cluster-agent
 
-go 1.21
+go 1.23
 
 require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
