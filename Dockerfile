@@ -13,8 +13,11 @@ FROM registry.access.redhat.com/ubi9/ubi
 ARG VERSION=unknown
 LABEL name="coroot-cluster-agent" \
       vendor="Coroot, Inc." \
+      maintainer="Coroot, Inc." \
       version=${VERSION} \
-      summary="Coroot Cluster Agent."
+      release="1" \
+      summary="Coroot Cluster Agent." \
+      description="Coroot Cluster Agent container image."
 
 COPY LICENSE /licenses/LICENSE
 
