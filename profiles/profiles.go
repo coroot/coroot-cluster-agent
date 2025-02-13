@@ -38,12 +38,40 @@ type Profiles struct {
 	prevCacheLock sync.Mutex
 
 	k8sPodEvents <-chan discovery.PodEvent
+
+	options Options
 }
 
-func NewProfiles() (*Profiles, error) {
+type Processor interface {
+	Process([]byte) error
+}
+
+type Options struct {
+	profileProcessors []Processor
+}
+
+func WithProfileProcessor(handlers ...Processor) func(*Options) error {
+	return func(o *Options) error {
+		for _, h := range handlers {
+			o.profileProcessors = append(o.profileProcessors, h)
+		}
+
+		return nil
+	}
+}
+
+func NewProfiles(options ...func(*Options) error) (*Profiles, error) {
 	if *flags.ProfilesScrapeInterval == 0 {
 		klog.Infoln("scrape interval is not set, disabling the scraper")
 		return nil, nil
+	}
+
+	opts := &Options{}
+
+	for _, opt := range options {
+		if err := opt(opts); err != nil {
+			return nil, err
+		}
 	}
 
 	ps := &Profiles{
@@ -54,6 +82,7 @@ func NewProfiles() (*Profiles, error) {
 		httpClient:     &http.Client{},
 		prevCache:      map[ProfileKey]map[uint64]int64{},
 		targets:        map[string]ScrapeTarget{},
+		options:        *opts,
 	}
 
 	klog.Infof("endpoint: %s, scrape interval: %s", ps.endpoint, ps.scrapeInterval)
@@ -171,7 +200,19 @@ func (ps *Profiles) scrape(profileType string, addr *url.URL) (*profile.Profile,
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%d: %s", resp.StatusCode, resp.Status)
 	}
-	p, err := profile.Parse(resp.Body)
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, handler := range ps.options.profileProcessors {
+		if err := handler.Process(data); err != nil {
+			return nil, err
+		}
+	}
+
+	p, err := profile.ParseData(data)
 	if err != nil {
 		return nil, err
 	}
