@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elasticache"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/coroot/coroot-cluster-agent/common"
-	"github.com/coroot/coroot/model"
+	"github.com/coroot/coroot-cluster-agent/config"
 	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/klog"
 )
@@ -30,7 +30,7 @@ var (
 )
 
 type Discoverer struct {
-	cfg  *model.AWSConfig
+	cfg  *config.AWSConfig
 	sess *session.Session
 	reg  prometheus.Registerer
 	stop chan struct{}
@@ -42,7 +42,7 @@ type Discoverer struct {
 	ecCollectors  map[string]*ECCollector
 }
 
-func NewDiscoverer(cfg *model.AWSConfig, reg prometheus.Registerer) (*Discoverer, error) {
+func NewDiscoverer(cfg *config.AWSConfig, reg prometheus.Registerer) (*Discoverer, error) {
 	sess, err := newSession(cfg)
 	if err != nil {
 		return nil, err
@@ -97,7 +97,7 @@ func (d *Discoverer) Stop() {
 	d.reg.Unregister(d)
 }
 
-func (d *Discoverer) Update(cfg *model.AWSConfig) error {
+func (d *Discoverer) Update(cfg *config.AWSConfig) error {
 	if d.cfg.Equal(cfg) {
 		return nil
 	}
@@ -271,7 +271,7 @@ func ecLabels(id string) prometheus.Labels {
 	return prometheus.Labels{"ec_instance_id": id}
 }
 
-func newSession(cfg *model.AWSConfig) (*session.Session, error) {
+func newSession(cfg *config.AWSConfig) (*session.Session, error) {
 	creds := credentials.NewStaticCredentials(cfg.AccessKeyID, cfg.SecretAccessKey, "")
 	config := aws.NewConfig().WithRegion(cfg.Region).WithCredentials(creds)
 	config.Retryer = client.DefaultRetryer{

@@ -13,9 +13,10 @@ import (
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
-	"github.com/coroot/coroot-cluster-agent/discovery"
 	"github.com/coroot/coroot-cluster-agent/flags"
+	"github.com/coroot/coroot-cluster-agent/k8s"
 	"github.com/google/pprof/profile"
+	"golang.org/x/exp/maps"
 	"k8s.io/klog"
 )
 
@@ -31,19 +32,19 @@ type Profiles struct {
 
 	httpClient *http.Client
 
-	targets     map[string]ScrapeTarget
+	targets     map[string]*Target
 	targetsLock sync.Mutex
 
 	prevCache     map[ProfileKey]map[uint64]int64
 	prevCacheLock sync.Mutex
 
-	k8sPodEvents <-chan discovery.PodEvent
+	k8sPodEvents <-chan k8s.PodEvent
 }
 
-func NewProfiles() (*Profiles, error) {
+func NewProfiles() *Profiles {
 	if *flags.ProfilesScrapeInterval == 0 {
 		klog.Infoln("scrape interval is not set, disabling the scraper")
-		return nil, nil
+		return nil
 	}
 
 	ps := &Profiles{
@@ -53,65 +54,35 @@ func NewProfiles() (*Profiles, error) {
 		scrapeTimeout:  *flags.ProfilesScrapeTimeout,
 		httpClient:     &http.Client{},
 		prevCache:      map[ProfileKey]map[uint64]int64{},
-		targets:        map[string]ScrapeTarget{},
+		targets:        map[string]*Target{},
 	}
 
 	klog.Infof("endpoint: %s, scrape interval: %s", ps.endpoint, ps.scrapeInterval)
 
-	return ps, nil
+	return ps
 }
 
-func (ps *Profiles) ListenPodEvents(events <-chan discovery.PodEvent) {
+func (ps *Profiles) ListenPodEvents(events <-chan k8s.PodEvent) {
 	ps.k8sPodEvents = events
 }
 
 func (ps *Profiles) Start() {
-	targetsCh := make(chan ScrapeTarget)
-	go ps.registerScrapeTargets(targetsCh)
-	go k8sDiscovery(ps.k8sPodEvents, targetsCh)
+	go ps.discoverFromPods()
 	go ps.scrapeLoop()
-}
-
-func (ps *Profiles) registerScrapeTargets(ch <-chan ScrapeTarget) {
-	for target := range ch {
-		ps.targetsLock.Lock()
-		if target.ServiceName == "" {
-			t, ok := ps.targets[target.Address]
-			if ok {
-				labelsHash := t.Labels.Hash()
-				ps.prevCacheLock.Lock()
-				for key := range ps.prevCache {
-					if t.ServiceName == key.ServiceName && labelsHash == key.LabelsHash {
-						delete(ps.prevCache, key)
-					}
-				}
-				ps.prevCacheLock.Unlock()
-				klog.Infoln("removing target:", target.Address, target.ServiceName, target.Labels)
-				delete(ps.targets, target.Address)
-			}
-		} else {
-			klog.Infoln("new target:", target.Address, target.ServiceName, target.Labels)
-			ps.targets[target.Address] = target
-		}
-		ps.targetsLock.Unlock()
-	}
 }
 
 func (ps *Profiles) scrapeLoop() {
 	for {
 		start := time.Now()
-		var targets []ScrapeTarget
 		ps.targetsLock.Lock()
-		for _, t := range ps.targets {
-			targets = append(targets, t)
-		}
+		targets := maps.Values(ps.targets)
 		ps.targetsLock.Unlock()
 
 		var wg sync.WaitGroup
 		for _, t := range targets {
 			addr, err := url.Parse("http://" + t.Address)
 			if err != nil {
-				klog.Errorln(err)
+				t.logger.Error(err)
 				continue
 			}
 			for _, profileType := range goProfileTypes {
@@ -120,7 +91,7 @@ func (ps *Profiles) scrapeLoop() {
 					defer wg.Done()
 					p, err := ps.scrape(pt, u)
 					if err != nil {
-						klog.Errorln("failed to scrape:", err)
+						t.logger.Errorf("failed to scrape: %s", err)
 						return
 					}
 					if len(p.Sample) == 0 {
@@ -134,7 +105,7 @@ func (ps *Profiles) scrapeLoop() {
 
 					err = ps.upload(sn, ls, p)
 					if err != nil {
-						klog.Errorln("failed to upload:", err)
+						t.logger.Errorf("failed to upload: %s", err)
 						return
 					}
 				}(t.ServiceName, t.Labels, addr, profileType)
@@ -298,29 +269,62 @@ func (ps *Profiles) upload(serviceName string, labels Labels, p *profile.Profile
 	return nil
 }
 
-func k8sDiscovery(events <-chan discovery.PodEvent, targets chan<- ScrapeTarget) {
-	for e := range events {
+func (ps *Profiles) discoverFromPods() {
+	for e := range ps.k8sPodEvents {
 		switch e.Type {
-		case discovery.PodEventTypeAdd:
-			pod := Pod{Pod: e.Curr}
-			if pod.scrapeOn() && pod.scrapeAddress() != "" && pod.Running() {
-				targets <- pod.addTarget()
+		case k8s.PodEventTypeAdd, k8s.PodEventTypeChange:
+			target := TargetFromPod(e.Pod)
+			if target == nil {
+				if t := TargetFromPod(e.Old); t != nil {
+					ps.delTarget(t)
+				}
+				continue
 			}
-		case discovery.PodEventTypeChange:
-			prevPod := Pod{Pod: e.Prev}
-			currPod := Pod{Pod: e.Curr}
-			if (prevPod.scrapeOn() && !currPod.scrapeOn()) || (prevPod.scrapePort() != "" && currPod.scrapePort() == "") {
-				targets <- prevPod.delTarget()
-			}
-			if currPod.scrapeOn() && currPod.scrapeAddress() != "" && currPod.Running() {
-				targets <- currPod.addTarget()
+			ps.targetsLock.Lock()
+			t := ps.targets[target.Address]
+			ps.targetsLock.Unlock()
+			switch {
+			case t == nil:
+				ps.addTarget(target)
+			case t.Equal(target):
+				continue
+			default:
+				ps.delTarget(t)
+				ps.addTarget(target)
 			}
 
-		case discovery.PodEventTypeDelete:
-			pod := Pod{Pod: e.Curr}
-			if pod.scrapeOn() {
-				targets <- pod.delTarget()
+		case k8s.PodEventTypeDelete:
+			target := TargetFromPod(e.Pod)
+			if target == nil {
+				continue
+			}
+			ps.delTarget(target)
+		}
+	}
+}
+
+func (ps *Profiles) addTarget(target *Target) {
+	ps.targetsLock.Lock()
+	defer ps.targetsLock.Unlock()
+	klog.Infof("new target: %s", target)
+	ps.targets[target.Address] = target
+}
+
+func (ps *Profiles) delTarget(target *Target) {
+	ps.targetsLock.Lock()
+	defer ps.targetsLock.Unlock()
+
+	t := ps.targets[target.Address]
+	if t != nil {
+		labelsHash := t.Labels.Hash()
+		ps.prevCacheLock.Lock()
+		defer ps.prevCacheLock.Unlock()
+		for key := range ps.prevCache {
+			if t.ServiceName == key.ServiceName && labelsHash == key.LabelsHash {
+				delete(ps.prevCache, key)
 			}
 		}
 	}
+	klog.Infof("removing target: %s", target)
+	delete(ps.targets, target.Address)
 }

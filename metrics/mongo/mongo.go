@@ -35,9 +35,10 @@ type Collector struct {
 	logger     logger.Logger
 }
 
-func New(host string, username, password string, timeout time.Duration) *Collector {
-	c := &Collector{}
-	c.logger = logger.NewKlog(host)
+func New(host string, username, password string, timeout time.Duration, logger logger.Logger) *Collector {
+	c := &Collector{
+		logger: logger,
+	}
 	c.clientOpts = options.Client().
 		SetHosts([]string{host}).
 		SetDirect(true).

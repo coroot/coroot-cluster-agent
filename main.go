@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/config"
-	"github.com/coroot/coroot-cluster-agent/discovery"
 	"github.com/coroot/coroot-cluster-agent/flags"
+	"github.com/coroot/coroot-cluster-agent/k8s"
 	"github.com/coroot/coroot-cluster-agent/metrics"
 	"github.com/coroot/coroot-cluster-agent/profiles"
 	"github.com/gorilla/mux"
@@ -32,40 +32,36 @@ func main() {
 	router.PathPrefix("/debug/pprof/").Handler(http.DefaultServeMux)
 	router.HandleFunc("/health", health).Methods(http.MethodGet)
 
-	cu, err := config.NewUpdater()
+	config, err := config.NewUpdater()
 	if err != nil {
 		klog.Exitln(err)
 	}
 
-	ms, err := metrics.NewMetrics()
+	k8s, err := k8s.NewK8S()
 	if err != nil {
 		klog.Exitln(err)
 	}
-	if ms != nil {
-		cu.Subscribe(ms)
+
+	if ms := metrics.NewMetrics(k8s); ms != nil {
+		config.SubscribeForUpdates(ms)
+		k8s.SubscribeForPodEvents(ms)
 		router.Handle("/metrics", ms.HttpHandler())
-	}
-
-	cu.Start()
-	defer cu.Stop()
-
-	k8s, err := discovery.NewK8S()
-	if err != nil {
-		klog.Exitln(err)
-	}
-
-	if k8s != nil {
-		ps, err := profiles.NewProfiles()
+		err = ms.Start()
 		if err != nil {
 			klog.Exitln(err)
 		}
-		if ps != nil {
-			k8s.Subscribe(ps)
-			ps.Start()
-		}
-		k8s.Start()
-		defer k8s.Stop()
 	}
+
+	if ps := profiles.NewProfiles(); ps != nil {
+		k8s.SubscribeForPodEvents(ps)
+		ps.Start()
+	}
+
+	config.Start()
+	defer config.Stop()
+
+	k8s.Start()
+	defer k8s.Stop()
 
 	klog.Infoln("listening on", *flags.ListenAddress)
 	klog.Exitln(http.ListenAndServe(*flags.ListenAddress, router))

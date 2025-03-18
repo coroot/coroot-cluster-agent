@@ -1,11 +1,15 @@
 package profiles
 
 import (
+	"cmp"
 	"fmt"
 	"hash/fnv"
+	"net"
 	"sort"
 
-	"github.com/coroot/coroot-cluster-agent/discovery"
+	"github.com/coroot/coroot-cluster-agent/k8s"
+	"github.com/coroot/logger"
+	"golang.org/x/exp/maps"
 )
 
 type Source string
@@ -31,12 +35,6 @@ type ProfileKey struct {
 	ProfileType string
 }
 
-type ScrapeTarget struct {
-	Address     string
-	ServiceName string
-	Labels      Labels
-}
-
 type Labels map[string]string
 
 func (ls Labels) Hash() uint64 {
@@ -56,43 +54,50 @@ func (ls Labels) Hash() uint64 {
 	return h.Sum64()
 }
 
-type Pod struct {
-	*discovery.Pod
+type Target struct {
+	Address     string
+	ServiceName string
+	Labels      Labels
+
+	Description string
+
+	logger logger.Logger
 }
 
-func (p *Pod) scrapeOn() bool {
-	return p.Annotations["coroot.com/profile-scrape"] == "true" || p.Annotations["pyroscope.io/scrape"] == "true"
+func (t *Target) Equal(other *Target) bool {
+	return t.Address == other.Address && t.ServiceName == other.ServiceName && maps.Equal(t.Labels, other.Labels)
 }
 
-func (p *Pod) scrapePort() string {
-	if p.Annotations["coroot.com/profile-port"] != "" {
-		return p.Annotations["coroot.com/profile-port"]
+func (t *Target) String() string {
+	return fmt.Sprintf("%s (%s)", t.Address, t.Description)
+}
+
+func TargetFromPod(pod *k8s.Pod) *Target {
+	if pod == nil || pod.Annotations == nil {
+		return nil
 	}
-	return p.Annotations["pyroscope.io/port"]
-}
 
-func (p *Pod) scrapeAddress() string {
-	if p.IP == "" || p.scrapePort() == "" {
-		return ""
-	}
-	return fmt.Sprintf("%s:%s", p.IP, p.scrapePort())
-}
+	var t *Target
 
-func (p *Pod) addTarget() ScrapeTarget {
-	return ScrapeTarget{
-		Address:     p.scrapeAddress(),
-		ServiceName: p.ServiceName(),
-		Labels: Labels{
-			"namespace": p.Id.Namespace,
-			"pod":       p.Id.Name,
-			"node":      p.Id.NodeName,
-		},
+	if cmp.Or(pod.Annotations["coroot.com/profile-scrape"], pod.Annotations["pyroscope.io/scrape"]) == "true" {
+		port := cmp.Or(pod.Annotations["coroot.com/profile-port"], pod.Annotations["pyroscope.io/port"])
+		if port != "" {
+			t = &Target{
+				Address:     net.JoinHostPort(pod.IP, port),
+				ServiceName: pod.ServiceName(),
+				Labels: Labels{
+					"namespace": pod.Id.Namespace,
+					"pod":       pod.Id.Name,
+					"node":      pod.Id.NodeName,
+				},
+			}
+		}
 	}
-}
 
-func (p *Pod) delTarget() ScrapeTarget {
-	return ScrapeTarget{
-		Address:     p.scrapeAddress(),
-		ServiceName: "", // means delete
+	if t != nil {
+		t.Description = fmt.Sprintf("ns=%s, pod=%s, node=%s", pod.Id.Namespace, pod.Id.Name, pod.Id.NodeName)
+		t.logger = logger.NewKlog(t.String())
 	}
+
+	return t
 }

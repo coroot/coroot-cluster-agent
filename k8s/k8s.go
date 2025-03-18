@@ -1,8 +1,7 @@
-package discovery
+package k8s
 
 import (
 	"errors"
-	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -11,6 +10,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
+)
+
+var (
+	ErrForbidden = errors.New("forbidden")
+	ErrNotFound  = errors.New("not found")
 )
 
 type PodEventType int
@@ -27,14 +31,12 @@ type PodEventsListener interface {
 
 type PodEvent struct {
 	Type PodEventType
-	Curr *Pod
-	Prev *Pod
+	Pod  *Pod
+	Old  *Pod
 }
 
 type K8S struct {
 	client *kubernetes.Clientset
-	pods   map[PodId]*Pod
-	lock   sync.Mutex
 	stopCh chan struct{}
 
 	subscribers []chan<- PodEvent
@@ -57,7 +59,6 @@ func NewK8S() (*K8S, error) {
 
 	k8s := &K8S{
 		client: client,
-		pods:   map[PodId]*Pod{},
 		stopCh: make(chan struct{}),
 	}
 
@@ -65,13 +66,16 @@ func NewK8S() (*K8S, error) {
 }
 
 func (k8s *K8S) Start() {
-	if len(k8s.subscribers) == 0 {
+	if k8s == nil || len(k8s.subscribers) == 0 {
 		return
 	}
 	go k8s.start()
 }
 
 func (k8s *K8S) Stop() {
+	if k8s == nil {
+		return
+	}
 	close(k8s.stopCh)
 	for _, s := range k8s.subscribers {
 		close(s)
@@ -86,35 +90,29 @@ func (k8s *K8S) start() {
 			if !pod.Running() {
 				return
 			}
-			k8s.lock.Lock()
-			defer k8s.lock.Unlock()
-			k8s.pods[pod.Id] = pod
-			k8s.sendEvent(PodEvent{Type: PodEventTypeAdd, Curr: pod})
+			k8s.sendEvent(PodEvent{Type: PodEventTypeAdd, Pod: pod})
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			pod := podFromObj(newObj)
-			prev := podFromObj(oldObj)
-			if !pod.Running() || pod.Equal(prev) {
+			old := podFromObj(oldObj)
+			if !pod.Running() || pod.Equal(old) {
 				return
 			}
-			k8s.lock.Lock()
-			defer k8s.lock.Unlock()
-			k8s.pods[pod.Id] = pod
-			k8s.sendEvent(PodEvent{Type: PodEventTypeChange, Curr: pod, Prev: prev})
+			k8s.sendEvent(PodEvent{Type: PodEventTypeChange, Pod: pod, Old: old})
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod := podFromObj(obj)
-			k8s.lock.Lock()
-			defer k8s.lock.Unlock()
-			delete(k8s.pods, pod.Id)
-			k8s.sendEvent(PodEvent{Type: PodEventTypeDelete, Curr: pod})
+			k8s.sendEvent(PodEvent{Type: PodEventTypeDelete, Pod: pod})
 		},
 	})
 
 	go informer.Run(k8s.stopCh)
 }
 
-func (k8s *K8S) Subscribe(l PodEventsListener) {
+func (k8s *K8S) SubscribeForPodEvents(l PodEventsListener) {
+	if k8s == nil {
+		return
+	}
 	ch := make(chan PodEvent)
 	l.ListenPodEvents(ch)
 	k8s.subscribers = append(k8s.subscribers, ch)

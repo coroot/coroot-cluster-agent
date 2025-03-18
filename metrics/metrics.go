@@ -1,25 +1,25 @@
 package metrics
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"net/url"
-	"strconv"
+	"sync"
 	"time"
 
+	"github.com/coroot/coroot-cluster-agent/config"
 	"github.com/coroot/coroot-cluster-agent/flags"
+	"github.com/coroot/coroot-cluster-agent/k8s"
 	"github.com/coroot/coroot-cluster-agent/metrics/aws"
-	"github.com/coroot/coroot-cluster-agent/metrics/mongo"
-	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
-	postgres "github.com/coroot/coroot-pg-agent/collector"
-	"github.com/coroot/coroot/model"
 	"github.com/coroot/logger"
-	"github.com/go-kit/log/level"
-	redis "github.com/oliver006/redis_exporter/exporter"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	memcached "github.com/prometheus/memcached_exporter/pkg/exporter"
+	"golang.org/x/exp/maps"
 	"k8s.io/klog"
+)
+
+const (
+	ExportersRecheckInterval = 10 * time.Second
 )
 
 type Metrics struct {
@@ -33,15 +33,20 @@ type Metrics struct {
 
 	reg *prometheus.Registry
 
-	exporters map[string]*Exporter
+	targets     map[string]*Target
+	targetsLock sync.Mutex
 
 	aws *aws.Discoverer
+
+	k8s *k8s.K8S
+
+	k8sPodEvents <-chan k8s.PodEvent
 }
 
-func NewMetrics() (*Metrics, error) {
+func NewMetrics(k8s *k8s.K8S) *Metrics {
 	if *flags.MetricsScrapeInterval == 0 {
 		klog.Infoln("scrape interval is not set, disabling the scraper")
-		return nil, nil
+		return nil
 	}
 
 	ms := &Metrics{
@@ -53,165 +58,144 @@ func NewMetrics() (*Metrics, error) {
 		scrapeTimeout:  *flags.MetricsScrapeTimeout,
 		walDir:         *flags.MetricsWALDir,
 		reg:            prometheus.NewRegistry(),
-		exporters:      map[string]*Exporter{},
+		targets:        map[string]*Target{},
+		k8s:            k8s,
 	}
 
 	klog.Infof("endpoint: %s, scrape interval: %s", ms.endpoint, ms.scrapeInterval)
 
-	err := ms.runScraper()
-	if err != nil {
-		return nil, err
-	}
-
-	return ms, nil
+	return ms
 }
 
-func (ms *Metrics) ListenConfigUpdates(updates <-chan model.Config) {
+func (ms *Metrics) Start() error {
+	go ms.discoverFromPods()
+	go ms.startExporters()
+	return ms.runScraper()
+}
+
+func (ms *Metrics) ListenConfigUpdates(updates <-chan config.Config) {
 	go func() {
 		for cfg := range updates {
-			ms.updateExporters(cfg.ApplicationInstrumentation)
 			ms.updateAWS(cfg.AWSConfig)
+			ms.discoverFromConfig(cfg.ApplicationInstrumentation)
 		}
 	}()
+}
+
+func (ms *Metrics) ListenPodEvents(events <-chan k8s.PodEvent) {
+	ms.k8sPodEvents = events
 }
 
 func (ms *Metrics) HttpHandler() http.Handler {
 	return promhttp.HandlerFor(ms.reg, promhttp.HandlerOpts{})
 }
 
-func (ms *Metrics) updateExporters(targets []model.ApplicationInstrumentation) {
-	actual := map[string]bool{}
-	for _, t := range targets {
-		config := ExporterConfig(t)
-		actual[config.Address()] = true
-		exporter := ms.exporters[config.Address()]
-		switch {
-		case exporter == nil:
-			klog.Infof("new target: %s", config)
-			ms.startExporter(config)
-		case config.Equal(exporter.Config):
+func (ms *Metrics) addTarget(target *Target) {
+	klog.Infof("new target: %s", target)
+	ms.targetsLock.Lock()
+	defer ms.targetsLock.Unlock()
+	ms.targets[target.Addr] = target
+}
+
+func (ms *Metrics) delTarget(target *Target) {
+	klog.Infof("removing target: %s", target)
+	ms.targetsLock.Lock()
+	defer ms.targetsLock.Unlock()
+	t := ms.targets[target.Addr]
+	if t != nil {
+		t.StopExporter(ms.reg)
+	}
+	delete(ms.targets, target.Addr)
+}
+
+func (ms *Metrics) startExporters() {
+	for range time.Tick(ExportersRecheckInterval) {
+		ms.targetsLock.Lock()
+		var targets []*Target
+		for _, t := range ms.targets {
+			if !t.IsExporterStarted() {
+				targets = append(targets, t)
+			}
+		}
+		ms.targetsLock.Unlock()
+
+		if len(targets) == 0 {
 			continue
-		default:
-			klog.Infof("updating target: %s", config)
-			ms.stopExporter(exporter.Config)
-			ms.startExporter(config)
 		}
-	}
-	for _, exporter := range ms.exporters {
-		config := exporter.Config
-		if actual[config.Address()] {
-			continue
+
+		type secretId struct {
+			namespace, name string
 		}
-		klog.Infof("deleting target: %s", config)
-		ms.stopExporter(config)
+		id2Keys := map[secretId][]string{}
+		for _, t := range targets {
+			if s := t.CredentialsSecret; s.Name != "" {
+				var keys []string
+				if s.UsernameKey != "" {
+					keys = append(keys, s.UsernameKey)
+				}
+				if s.PasswordKey != "" {
+					keys = append(keys, s.PasswordKey)
+				}
+				if len(keys) > 0 {
+					id2Keys[secretId{namespace: s.Namespace, name: s.Name}] = keys
+				}
+			}
+		}
+		var err error
+		secrets := map[secretId]map[string]string{}
+		var isSecretsForbidden bool
+		for id, keys := range id2Keys {
+			secrets[id], err = ms.k8s.GetSecret(id.namespace, id.name, keys...)
+			if err != nil {
+				if errors.Is(err, k8s.ErrForbidden) {
+					isSecretsForbidden = true
+					break
+				}
+				if errors.Is(err, k8s.ErrNotFound) {
+					continue
+				}
+				klog.Errorf("failed to get secret '%s': %s", id.name, err)
+				continue
+			}
+		}
+
+		if isSecretsForbidden {
+			klog.Errorln("cannot retrieve secrets: access forbidden; update Coroot Operator to proceed")
+		}
+
+		for _, t := range targets {
+			credentials := t.Credentials
+			if s := t.CredentialsSecret; s.Name != "" {
+				kv := secrets[secretId{namespace: s.Namespace, name: s.Name}]
+				switch {
+				case isSecretsForbidden:
+					t.logger.Errorf("failed to start exporter: secret '%s' forbidden", s.Name)
+					continue
+				case kv == nil:
+					t.logger.Errorf("failed to start exporter: secret '%s' not found", s.Name)
+					continue
+				default:
+					if username := kv[s.UsernameKey]; username != "" {
+						credentials.Username = username
+					}
+					if password := kv[s.PasswordKey]; password != "" {
+						credentials.Password = password
+					}
+				}
+			}
+			if err := t.ValidateCredentials(credentials); err != nil {
+				t.logger.Errorf("failed to start exporter: %s", err)
+				continue
+			}
+			if err := t.StartExporter(ms.reg, credentials, ms.scrapeInterval, ms.scrapeTimeout); err != nil {
+				t.logger.Errorf("failed to start exporter: %s", err)
+				continue
+			}
+		}
 	}
 }
 
-func (ms *Metrics) startExporter(config ExporterConfig) {
-	collector, stop, err := ms.createCollector(config)
-	if err != nil {
-		klog.Errorln(err)
-		return
-	}
-
-	exporter := &Exporter{Config: config, Collector: collector, Stop: stop}
-	err = prometheus.WrapRegistererWith(config.Labels(), ms.reg).Register(exporter)
-	if err != nil {
-		klog.Errorln(err)
-		return
-	}
-	ms.exporters[config.Address()] = exporter
-}
-
-func (ms *Metrics) stopExporter(config ExporterConfig) {
-	exporter := ms.exporters[config.Address()]
-	if exporter == nil {
-		return
-	}
-
-	prometheus.WrapRegistererWith(config.Labels(), ms.reg).Unregister(exporter)
-	if exporter.Stop != nil {
-		exporter.Stop()
-	}
-	delete(ms.exporters, config.Address())
-}
-
-func (ms *Metrics) createCollector(config ExporterConfig) (prometheus.Collector, func(), error) {
-	timeout := ms.scrapeTimeout / 2
-
-	switch config.Type {
-
-	case model.ApplicationTypePostgres:
-		userPass := url.UserPassword(config.Credentials.Username, config.Credentials.Password)
-		query := url.Values{}
-		query.Set("connect_timeout", "1")
-		query.Set("statement_timeout", strconv.Itoa(int(timeout.Milliseconds())))
-		sslmode := config.Params["sslmode"]
-		if sslmode == "" {
-			sslmode = "disable"
-		}
-		query.Set("sslmode", sslmode)
-		dsn := fmt.Sprintf("postgresql://%s@%s/postgres?%s", userPass, config.Address(), query.Encode())
-		collector, err := postgres.New(dsn, ms.scrapeInterval, logger.NewKlog(config.Address()))
-		if err != nil {
-			return nil, nil, err
-		}
-		return collector, func() { _ = collector.Close() }, nil
-
-	case model.ApplicationTypeMysql:
-		userPass := fmt.Sprintf("%s:%s", config.Credentials.Username, config.Credentials.Password)
-		query := url.Values{}
-		query.Set("timeout", fmt.Sprintf("%dms", timeout.Milliseconds()))
-		tls := config.Params["tls"]
-		if tls == "" {
-			tls = "false"
-		}
-		query.Set("tls", tls)
-		dsn := fmt.Sprintf("%s@tcp(%s)/mysql?%s", userPass, config.Address(), query.Encode())
-		collector, err := mysql.New(dsn, logger.NewKlog(config.Address()), ms.scrapeInterval)
-		if err != nil {
-			return nil, nil, err
-		}
-		return collector, func() { _ = collector.Close() }, nil
-
-	case model.ApplicationTypeRedis:
-		dsn := fmt.Sprintf("redis://%s", config.Address())
-		opts := redis.Options{
-			User:                           config.Credentials.Username,
-			Password:                       config.Credentials.Password,
-			Namespace:                      "redis",
-			ConnectionTimeouts:             timeout,
-			RedisMetricsOnly:               true,
-			ExcludeLatencyHistogramMetrics: true,
-		}
-		collector, err := redis.NewRedisExporter(dsn, opts)
-		if err != nil {
-			return nil, nil, err
-		}
-		return collector, nil, nil
-
-	case model.ApplicationTypeMongodb:
-		collector := mongo.New(
-			config.Address(),
-			config.Credentials.Username,
-			config.Credentials.Password,
-			timeout,
-		)
-		return collector, func() { _ = collector.Close() }, nil
-
-	case model.ApplicationTypeMemcached:
-		collector := memcached.New(
-			config.Address(),
-			timeout,
-			level.NewFilter(&promLogger{l: logger.NewKlog(config.Address())}, level.AllowInfo()),
-			nil,
-		)
-		return collector, nil, nil
-	}
-	return nil, nil, fmt.Errorf("unsupported application type: %s", config.Type)
-}
-
-func (ms *Metrics) updateAWS(cfg *model.AWSConfig) {
+func (ms *Metrics) updateAWS(cfg *config.AWSConfig) {
 	switch {
 	case cfg == nil && ms.aws == nil:
 	case cfg == nil && ms.aws != nil:
@@ -230,6 +214,69 @@ func (ms *Metrics) updateAWS(cfg *model.AWSConfig) {
 			klog.Errorln(err)
 			ms.aws.Stop()
 			ms.aws = nil
+		}
+	}
+}
+
+func (ms *Metrics) discoverFromPods() {
+	for e := range ms.k8sPodEvents {
+		switch e.Type {
+		case k8s.PodEventTypeAdd, k8s.PodEventTypeChange:
+			target := TargetFromPod(e.Pod)
+			if target == nil {
+				if t := TargetFromPod(e.Old); t != nil {
+					ms.delTarget(t)
+				}
+				continue
+			}
+			ms.targetsLock.Lock()
+			t := ms.targets[target.Addr]
+			ms.targetsLock.Unlock()
+			switch {
+			case t == nil:
+				ms.addTarget(target)
+			case t.Equal(target):
+				continue
+			default:
+				ms.delTarget(t)
+				ms.addTarget(target)
+			}
+		case k8s.PodEventTypeDelete:
+			target := TargetFromPod(e.Pod)
+			if target == nil {
+				continue
+			}
+			ms.delTarget(target)
+		}
+	}
+}
+
+func (ms *Metrics) discoverFromConfig(instrumentation []config.ApplicationInstrumentation) {
+	actual := map[string]bool{}
+	for _, i := range instrumentation {
+		target := TargetFromConfig(i)
+		actual[target.Addr] = true
+		ms.targetsLock.Lock()
+		t := ms.targets[target.Addr]
+		ms.targetsLock.Unlock()
+		switch {
+		case t == nil:
+			ms.addTarget(target)
+		case t.DiscoveredFromPodAnnotations:
+			continue
+		case t.Equal(target):
+			continue
+		default:
+			ms.delTarget(t)
+			ms.addTarget(target)
+		}
+	}
+	ms.targetsLock.Lock()
+	targets := maps.Values(ms.targets)
+	ms.targetsLock.Unlock()
+	for _, t := range targets {
+		if !actual[t.Addr] && !t.DiscoveredFromPodAnnotations {
+			ms.delTarget(t)
 		}
 	}
 }

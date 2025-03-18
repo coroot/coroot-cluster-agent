@@ -10,12 +10,11 @@ import (
 
 	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/coroot-cluster-agent/flags"
-	"github.com/coroot/coroot/model"
 	"k8s.io/klog"
 )
 
 type Listener interface {
-	ListenConfigUpdates(updates <-chan model.Config)
+	ListenConfigUpdates(updates <-chan Config)
 }
 
 type Updater struct {
@@ -23,7 +22,7 @@ type Updater struct {
 	apiKey         string
 	updateInterval time.Duration
 	httpClient     *http.Client
-	subscribers    []chan<- model.Config
+	subscribers    []chan<- Config
 }
 
 func NewUpdater() (*Updater, error) {
@@ -38,8 +37,8 @@ func NewUpdater() (*Updater, error) {
 	return c, nil
 }
 
-func (u *Updater) Subscribe(l Listener) {
-	ch := make(chan model.Config)
+func (u *Updater) SubscribeForUpdates(l Listener) {
+	ch := make(chan Config)
 	l.ListenConfigUpdates(ch)
 	u.subscribers = append(u.subscribers, ch)
 }
@@ -68,7 +67,7 @@ func (u *Updater) Stop() {
 	}
 }
 
-func (u *Updater) fetchConfig() (*model.Config, error) {
+func (u *Updater) fetchConfig() (*Config, error) {
 	req, err := http.NewRequest(http.MethodGet, u.endpoint.String(), nil)
 	if err != nil {
 		return nil, err
@@ -83,7 +82,7 @@ func (u *Updater) fetchConfig() (*model.Config, error) {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("%d: %s", resp.StatusCode, string(body))
 	}
-	var cfg model.Config
+	var cfg Config
 	err = json.NewDecoder(resp.Body).Decode(&cfg)
 	return &cfg, err
 }
