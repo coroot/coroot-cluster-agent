@@ -183,10 +183,6 @@ func (ms *Metrics) startExporters() {
 					}
 				}
 			}
-			if err := t.ValidateCredentials(credentials); err != nil {
-				t.logger.Errorf("failed to start exporter: %s", err)
-				continue
-			}
 			if err := t.StartExporter(ms.reg, credentials, ms.scrapeInterval, ms.scrapeTimeout); err != nil {
 				t.logger.Errorf("failed to start exporter: %s", err)
 				continue

@@ -90,23 +90,6 @@ func (t *Target) IsExporterStarted() bool {
 	return t.coll != nil
 }
 
-func (t *Target) ValidateCredentials(credentials Credentials) error {
-	msg := ""
-	switch t.Type {
-	case TargetTypePostgres, TargetTypeMysql:
-		if credentials.Username == "" || credentials.Password == "" {
-			msg = "the username and password must be provided"
-		}
-	}
-	if msg != "" {
-		if t.DiscoveredFromPodAnnotations {
-			msg = msg + " through pod annotations"
-		}
-		return fmt.Errorf(msg)
-	}
-	return nil
-}
-
 func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, scrapeInterval, scrapeTimeout time.Duration) error {
 	switch t.Type {
 
