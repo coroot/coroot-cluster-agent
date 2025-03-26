@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,7 +31,12 @@ func NewUpdater() (*Updater, error) {
 		endpoint:       (*flags.CorootURL).JoinPath("/v1/config"),
 		apiKey:         *flags.APIKey,
 		updateInterval: *flags.ConfigUpdateInterval,
-		httpClient:     &http.Client{Timeout: *flags.ConfigUpdateTimeout},
+		httpClient: &http.Client{
+			Timeout: *flags.ConfigUpdateTimeout,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: *flags.InsecureSkipVerify},
+			},
+		},
 	}
 	klog.Infof("endpoint: %s, update interval: %s", c.endpoint, c.updateInterval)
 

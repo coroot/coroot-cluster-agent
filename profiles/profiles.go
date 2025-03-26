@@ -3,6 +3,7 @@ package profiles
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -52,9 +53,13 @@ func NewProfiles() *Profiles {
 		apiKey:         *flags.APIKey,
 		scrapeInterval: *flags.ProfilesScrapeInterval,
 		scrapeTimeout:  *flags.ProfilesScrapeTimeout,
-		httpClient:     &http.Client{},
-		prevCache:      map[ProfileKey]map[uint64]int64{},
-		targets:        map[string]*Target{},
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: *flags.InsecureSkipVerify},
+			},
+		},
+		prevCache: map[ProfileKey]map[uint64]int64{},
+		targets:   map[string]*Target{},
 	}
 
 	klog.Infof("endpoint: %s, scrape interval: %s", ps.endpoint, ps.scrapeInterval)

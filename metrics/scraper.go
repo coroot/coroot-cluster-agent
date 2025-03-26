@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
+	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 	promCommon "github.com/prometheus/common/config"
@@ -34,6 +35,9 @@ func (ms *Metrics) runScraper() error {
 			Headers:       common.AuthHeaders(ms.apiKey),
 			RemoteTimeout: model.Duration(RemoteWriteTimeout),
 			QueueConfig:   config.DefaultQueueConfig,
+			HTTPClientConfig: promCommon.HTTPClientConfig{
+				TLSConfig: promCommon.TLSConfig{InsecureSkipVerify: *flags.InsecureSkipVerify},
+			},
 		},
 	)
 	cfg.ScrapeConfigs = append(cfg.ScrapeConfigs, &config.ScrapeConfig{

@@ -21,6 +21,8 @@ var (
 	ProfilesScrapeTimeout  = kingpin.Flag("profiles-scrape-timeout", "").Envar("PROFILES_SCRAPE_TIMEOUT").Default("10s").Duration()
 
 	KubeStateMetricsAddress = kingpin.Flag("kube-state-metrics-address", "").Envar("KUBE_STATE_METRICS_ADDRESS").String()
+
+	InsecureSkipVerify = kingpin.Flag("insecure-skip-verify", "whether to skip verifying the certificate or not").Envar("INSECURE_SKIP_VERIFY").Default("false").Bool()
 )
 
 func init() {
