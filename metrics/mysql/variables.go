@@ -1,7 +1,9 @@
 package mysql
 
-func (c *Collector) updateVariables(query string, dest map[string]string) error {
-	rows, err := c.db.Query(query)
+import "context"
+
+func (c *Collector) updateVariables(ctx context.Context, query string, dest map[string]string) error {
+	rows, err := c.db.QueryContext(ctx, query)
 	if err != nil {
 		return err
 	}

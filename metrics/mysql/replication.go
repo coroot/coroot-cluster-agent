@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"strconv"
 
@@ -23,13 +24,13 @@ func (rs *ReplicaStatus) Get(keys ...string) string {
 	return ""
 }
 
-func (c *Collector) updateReplicationStatus() error {
+func (c *Collector) updateReplicationStatus(ctx context.Context) error {
 	c.replicaStatuses = c.replicaStatuses[:0]
 	for _, q := range []string{"SHOW REPLICA STATUS", "SHOW SLAVE STATUS"} {
 		if c.invalidQueries[q] {
 			continue
 		}
-		rows, err := c.db.Query(q)
+		rows, err := c.db.QueryContext(ctx, q)
 		if err != nil {
 			if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1064 {
 				c.invalidQueries[q] = true

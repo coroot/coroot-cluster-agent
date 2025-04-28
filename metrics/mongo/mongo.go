@@ -33,18 +33,21 @@ type Collector struct {
 	clientOpts *options.ClientOptions
 	clientLock sync.Mutex
 	logger     logger.Logger
+
+	collectTimeout time.Duration
 }
 
-func New(host string, username, password string, timeout time.Duration, logger logger.Logger) *Collector {
+func New(host string, username, password string, collectTimeout time.Duration, logger logger.Logger) *Collector {
 	c := &Collector{
-		logger: logger,
+		logger:         logger,
+		collectTimeout: collectTimeout,
 	}
 	c.clientOpts = options.Client().
 		SetHosts([]string{host}).
 		SetDirect(true).
 		SetAppName("coroot-mongodb-agent").
-		SetServerSelectionTimeout(timeout).
-		SetConnectTimeout(timeout)
+		SetServerSelectionTimeout(collectTimeout).
+		SetConnectTimeout(collectTimeout)
 	if username != "" {
 		c.clientOpts.SetAuth(options.Credential{
 			Username: username,
@@ -84,7 +87,9 @@ func (c *Collector) Close() error {
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
-	ctx := context.Background()
+	ctx, cancelFunc := context.WithTimeout(context.Background(), c.collectTimeout)
+	defer cancelFunc()
+
 	if err := c.connectAndPing(ctx); err != nil {
 		c.logger.Warning(err)
 		ch <- common.Gauge(dUp, 0)

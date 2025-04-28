@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"sort"
 	"time"
 
@@ -24,7 +25,7 @@ type ioByTableSnapshot struct {
 	rows map[tableKey]ioSummary
 }
 
-func (c *Collector) queryTableIOWaits() (*ioByTableSnapshot, error) {
+func (c *Collector) queryTableIOWaits(ctx context.Context) (*ioByTableSnapshot, error) {
 	snapshot := &ioByTableSnapshot{ts: time.Now(), rows: map[tableKey]ioSummary{}}
 	q := `
 	SELECT
@@ -36,7 +37,7 @@ func (c *Collector) queryTableIOWaits() (*ioByTableSnapshot, error) {
 	WHERE 
 	    OBJECT_SCHEMA is not null AND 
 	    OBJECT_NAME is not null`
-	rows, err := c.db.Query(q)
+	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}

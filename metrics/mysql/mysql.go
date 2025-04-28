@@ -46,6 +46,7 @@ var (
 )
 
 type Collector struct {
+	ctx          context.Context
 	host         string
 	db           *sql.DB
 	logger       logger.Logger
@@ -53,6 +54,9 @@ type Collector struct {
 	cancelFunc   context.CancelFunc
 	lock         sync.RWMutex
 	scrapeErrors map[string]bool
+
+	scrapeInterval time.Duration
+	collectTimeout time.Duration
 
 	globalVariables map[string]string
 	globalStatus    map[string]string
@@ -65,11 +69,15 @@ type Collector struct {
 	invalidQueries map[string]bool
 }
 
-func New(dsn string, logger logger.Logger, scrapeInterval time.Duration) (*Collector, error) {
+func New(dsn string, logger logger.Logger, scrapeInterval, collectTimeout time.Duration) (*Collector, error) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
-		logger:          logger,
-		cancelFunc:      cancelFunc,
+		ctx:            ctx,
+		logger:         logger,
+		cancelFunc:     cancelFunc,
+		scrapeInterval: scrapeInterval,
+		collectTimeout: collectTimeout,
+
 		globalStatus:    map[string]string{},
 		globalVariables: map[string]string{},
 		invalidQueries:  map[string]bool{},
@@ -80,7 +88,9 @@ func New(dsn string, logger logger.Logger, scrapeInterval time.Duration) (*Colle
 		return nil, err
 	}
 	c.db.SetMaxOpenConns(1)
-	if err := c.db.Ping(); err != nil {
+	pingCtx, pingCancelFunc := context.WithTimeout(ctx, collectTimeout)
+	defer pingCancelFunc()
+	if err := c.db.PingContext(pingCtx); err != nil {
 		c.logger.Warning("probe failed:", err)
 	}
 	go func() {
@@ -106,7 +116,10 @@ func (c *Collector) Close() error {
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
-	if err := c.db.Ping(); err != nil {
+	ctx, cancelFunc := context.WithTimeout(c.ctx, c.collectTimeout)
+	defer cancelFunc()
+
+	if err := c.db.PingContext(ctx); err != nil {
 		c.logger.Warning("probe failed:", err)
 		ch <- common.Gauge(dUp, 0)
 		ch <- common.Gauge(dScrapeError, 1, err.Error(), "")
@@ -140,36 +153,44 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (c *Collector) snapshot() {
+	timeout := c.scrapeInterval - time.Second
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+
+	ctx, cancelFunc := context.WithTimeout(c.ctx, timeout)
+	defer cancelFunc()
+
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
 	c.scrapeErrors = map[string]bool{}
 
-	if err := c.updateVariables("SHOW GLOBAL VARIABLES", c.globalVariables); err != nil {
+	if err := c.updateVariables(ctx, "SHOW GLOBAL VARIABLES", c.globalVariables); err != nil {
 		c.logger.Warning(err)
 		c.scrapeErrors[err.Error()] = true
 		return
 	}
-	if err := c.updateVariables("SHOW GLOBAL STATUS", c.globalStatus); err != nil {
+	if err := c.updateVariables(ctx, "SHOW GLOBAL STATUS", c.globalStatus); err != nil {
 		c.logger.Warning(err)
 		c.scrapeErrors[err.Error()] = true
 		return
 	}
-	if err := c.updateReplicationStatus(); err != nil {
+	if err := c.updateReplicationStatus(ctx); err != nil {
 		c.logger.Warning(err)
 		c.scrapeErrors[err.Error()] = true
 		return
 	}
 	c.perfschemaPrev = c.perfschemaCurr
 	var err error
-	c.perfschemaCurr, err = c.queryStatementsSummary(c.perfschemaPrev)
+	c.perfschemaCurr, err = c.queryStatementsSummary(ctx, c.perfschemaPrev)
 	if err != nil {
 		c.logger.Warning(err)
 		c.scrapeErrors[err.Error()] = true
 		return
 	}
 	c.ioByTablePrev = c.ioByTableCurr
-	c.ioByTableCurr, err = c.queryTableIOWaits()
+	c.ioByTableCurr, err = c.queryTableIOWaits(ctx)
 	if err != nil {
 		c.logger.Warning(err)
 		c.scrapeErrors[err.Error()] = true

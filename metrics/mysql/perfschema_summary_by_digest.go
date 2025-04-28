@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"sort"
 	"time"
 
@@ -32,7 +33,7 @@ type statementsSummarySnapshot struct {
 	rows map[digestKey]statementsSummaryRow
 }
 
-func (c *Collector) queryStatementsSummary(prev *statementsSummarySnapshot) (*statementsSummarySnapshot, error) {
+func (c *Collector) queryStatementsSummary(ctx context.Context, prev *statementsSummarySnapshot) (*statementsSummarySnapshot, error) {
 	snapshot := &statementsSummarySnapshot{ts: time.Now(), rows: map[digestKey]statementsSummaryRow{}}
 	q := `
 	SELECT
@@ -47,7 +48,7 @@ func (c *Collector) queryStatementsSummary(prev *statementsSummarySnapshot) (*st
 	WHERE 
 	    DIGEST IS NOT NULL AND 
 	    DIGEST_TEXT IS NOT NULL`
-	rows, err := c.db.Query(q)
+	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}

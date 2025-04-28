@@ -5,7 +5,7 @@ go 1.23
 require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
 	github.com/aws/aws-sdk-go v1.50.0
-	github.com/coroot/coroot-pg-agent v1.2.7
+	github.com/coroot/coroot-pg-agent v1.2.9
 	github.com/coroot/logger v1.0.0
 	github.com/coroot/logparser v1.1.3
 	github.com/go-kit/log v0.2.1

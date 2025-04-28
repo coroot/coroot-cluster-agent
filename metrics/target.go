@@ -91,20 +91,24 @@ func (t *Target) IsExporterStarted() bool {
 }
 
 func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, scrapeInterval, scrapeTimeout time.Duration) error {
+	collectTimeout := scrapeTimeout - time.Second
+	if collectTimeout <= 0 {
+		collectTimeout = time.Second
+	}
 	switch t.Type {
 
 	case TargetTypePostgres:
 		userPass := url.UserPassword(credentials.Username, credentials.Password)
 		query := url.Values{}
 		query.Set("connect_timeout", "1")
-		query.Set("statement_timeout", strconv.Itoa(int(scrapeTimeout.Milliseconds())))
+		query.Set("statement_timeout", strconv.Itoa(int(collectTimeout.Milliseconds())))
 		sslmode := t.Params["sslmode"]
 		if sslmode == "" {
 			sslmode = "disable"
 		}
 		query.Set("sslmode", sslmode)
 		dsn := fmt.Sprintf("postgresql://%s@%s/postgres?%s", userPass, t.Addr, query.Encode())
-		collector, err := postgres.New(dsn, scrapeInterval, t.logger)
+		collector, err := postgres.New(dsn, scrapeInterval, collectTimeout, t.logger)
 		if err != nil {
 			return err
 		}
@@ -114,14 +118,14 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 	case TargetTypeMysql:
 		userPass := fmt.Sprintf("%s:%s", credentials.Username, credentials.Password)
 		query := url.Values{}
-		query.Set("timeout", fmt.Sprintf("%dms", scrapeTimeout.Milliseconds()))
+		query.Set("timeout", fmt.Sprintf("%dms", collectTimeout.Milliseconds()))
 		tls := t.Params["tls"]
 		if tls == "" {
 			tls = "false"
 		}
 		query.Set("tls", tls)
 		dsn := fmt.Sprintf("%s@tcp(%s)/mysql?%s", userPass, t.Addr, query.Encode())
-		collector, err := mysql.New(dsn, t.logger, scrapeInterval)
+		collector, err := mysql.New(dsn, t.logger, scrapeInterval, collectTimeout)
 		if err != nil {
 			return err
 		}
@@ -134,7 +138,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			User:                           credentials.Username,
 			Password:                       credentials.Password,
 			Namespace:                      "redis",
-			ConnectionTimeouts:             scrapeTimeout,
+			ConnectionTimeouts:             collectTimeout,
 			RedisMetricsOnly:               true,
 			ExcludeLatencyHistogramMetrics: true,
 		}
@@ -150,7 +154,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			t.Addr,
 			credentials.Username,
 			credentials.Password,
-			scrapeTimeout,
+			collectTimeout,
 			t.logger,
 		)
 		t.coll = collector
@@ -159,7 +163,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 	case TargetTypeMemcached:
 		collector := memcached.New(
 			t.Addr,
-			scrapeTimeout,
+			collectTimeout,
 			level.NewFilter(&promLogger{l: t.logger}, level.AllowInfo()),
 			nil,
 		)
