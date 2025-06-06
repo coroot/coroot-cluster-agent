@@ -12,6 +12,7 @@ type ApplicationInstrumentation struct {
 	Type        string            `json:"type"`
 	Host        string            `json:"host"`
 	Port        string            `json:"port"`
+	Sni         string            `json:"sni"`
 	Credentials Credentials       `json:"credentials"`
 	Params      map[string]string `json:"params"`
 	Instance    string            `json:"instance"`
