@@ -20,7 +20,7 @@ var (
 	ProfilesScrapeInterval = kingpin.Flag("profiles-scrape-interval", "").Envar("PROFILES_SCRAPE_INTERVAL").Default("60s").Duration()
 	ProfilesScrapeTimeout  = kingpin.Flag("profiles-scrape-timeout", "").Envar("PROFILES_SCRAPE_TIMEOUT").Default("10s").Duration()
 
-	KubeStateMetricsAddress = kingpin.Flag("kube-state-metrics-address", "").Envar("KUBE_STATE_METRICS_ADDRESS").String()
+	KubeStateMetricsListenAddress = kingpin.Flag("kube-state-metrics-listen-address", "").Default("127.0.0.1:10303").Envar("KUBE_STATE_METRICS_LISTEN_ADDRESS").String()
 
 	InsecureSkipVerify = kingpin.Flag("insecure-skip-verify", "whether to skip verifying the certificate or not").Envar("INSECURE_SKIP_VERIFY").Default("false").Bool()
 )

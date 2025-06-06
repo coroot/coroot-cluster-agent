@@ -11,6 +11,7 @@ import (
 	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/coroot/coroot-cluster-agent/k8s"
 	"github.com/coroot/coroot-cluster-agent/metrics/aws"
+	"github.com/coroot/coroot-cluster-agent/metrics/ksm"
 	"github.com/coroot/logger"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -36,24 +37,22 @@ type Metrics struct {
 	targets     map[string]*Target
 	targetsLock sync.Mutex
 
-	aws *aws.Discoverer
-
-	k8s *k8s.K8S
-
+	aws          *aws.Discoverer
+	k8s          *k8s.K8S
 	k8sPodEvents <-chan k8s.PodEvent
+	ksm          *ksm.KSM
 }
 
-func NewMetrics(k8s *k8s.K8S) *Metrics {
+func NewMetrics(k8s *k8s.K8S) (*Metrics, error) {
 	if *flags.MetricsScrapeInterval == 0 {
 		klog.Infoln("scrape interval is not set, disabling the scraper")
-		return nil
+		return nil, nil
 	}
 
 	ms := &Metrics{
 		endpoint:       (*flags.CorootURL).JoinPath("/v1/metrics"),
 		apiKey:         *flags.APIKey,
 		listenAddr:     *flags.ListenAddress,
-		ksmAddr:        *flags.KubeStateMetricsAddress,
 		scrapeInterval: *flags.MetricsScrapeInterval,
 		scrapeTimeout:  *flags.MetricsScrapeTimeout,
 		walDir:         *flags.MetricsWALDir,
@@ -62,15 +61,34 @@ func NewMetrics(k8s *k8s.K8S) *Metrics {
 		k8s:            k8s,
 	}
 
+	var err error
+	ksmAddr := *flags.KubeStateMetricsListenAddress
+	if ksmAddr != "" && k8s != nil {
+		ms.ksmAddr = ksmAddr
+		ms.ksm, err = ksm.NewKSM(ksmAddr)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	klog.Infof("endpoint: %s, scrape interval: %s", ms.endpoint, ms.scrapeInterval)
 
-	return ms
+	return ms, nil
 }
 
 func (ms *Metrics) Start() error {
 	go ms.discoverFromPods()
 	go ms.startExporters()
+	if ms.ksm != nil {
+		go ms.ksm.Start()
+	}
 	return ms.runScraper()
+}
+
+func (ms *Metrics) Stop() {
+	if ms.ksm != nil {
+		ms.ksm.Stop()
+	}
 }
 
 func (ms *Metrics) ListenConfigUpdates(updates <-chan config.Config) {

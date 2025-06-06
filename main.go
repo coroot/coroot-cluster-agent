@@ -42,7 +42,11 @@ func main() {
 		klog.Exitln(err)
 	}
 
-	if ms := metrics.NewMetrics(k8s); ms != nil {
+	ms, err := metrics.NewMetrics(k8s)
+	if err != nil {
+		klog.Exitln(err)
+	}
+	if ms != nil {
 		config.SubscribeForUpdates(ms)
 		k8s.SubscribeForPodEvents(ms)
 		router.Handle("/metrics", ms.HttpHandler())
@@ -50,6 +54,7 @@ func main() {
 		if err != nil {
 			klog.Exitln(err)
 		}
+		defer ms.Stop()
 	}
 
 	if ps := profiles.NewProfiles(); ps != nil {
