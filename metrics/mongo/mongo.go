@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"sort"
 	"strings"
@@ -62,7 +63,7 @@ type Collector struct {
 	prevSettingsText string
 }
 
-func New(host, username, password string, scrapeInterval, collectTimeout time.Duration,
+func New(host, username, password, tlsOpt string, sni string, scrapeInterval, collectTimeout time.Duration,
 	logger logger.Logger, emitter dbtracker.ChangeEmitter, targetAddr string,
 	maxTablesPerDB int, trackSizes bool) *Collector {
 
@@ -88,6 +89,12 @@ func New(host, username, password string, scrapeInterval, collectTimeout time.Du
 		c.clientOpts.SetAuth(options.Credential{
 			Username: username,
 			Password: password,
+		})
+	}
+	if tlsOpt == "true" {
+		c.clientOpts.SetTLSConfig(&tls.Config{
+			ServerName: sni,
+			MinVersion: tls.VersionTLS12,
 		})
 	}
 	trackSchema := c.emitter != nil
