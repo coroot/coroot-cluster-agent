@@ -23,6 +23,8 @@ var (
 	KubeStateMetricsListenAddress = kingpin.Flag("kube-state-metrics-listen-address", "").Default("127.0.0.1:10303").Envar("KUBE_STATE_METRICS_LISTEN_ADDRESS").String()
 
 	InsecureSkipVerify = kingpin.Flag("insecure-skip-verify", "whether to skip verifying the certificate or not").Envar("INSECURE_SKIP_VERIFY").Default("false").Bool()
+
+	CollectKubernetesEvents = kingpin.Flag("collect-kubernetes-events", "").Envar("COLLECT_KUBERNETES_EVENTS").Default("true").Bool()
 )
 
 func init() {

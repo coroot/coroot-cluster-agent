@@ -178,7 +178,7 @@ func (ms *Metrics) startExporters() {
 		}
 
 		if isSecretsForbidden {
-			klog.Errorln("cannot retrieve secrets: access forbidden; update Coroot Operator to proceed")
+			klog.Errorln("Cannot retrieve secrets: access forbidden. Update Coroot Operator to proceed.")
 		}
 
 		for _, t := range targets {
