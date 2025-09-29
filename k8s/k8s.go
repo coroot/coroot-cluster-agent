@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"context"
 	"errors"
 
 	"github.com/coroot/coroot-cluster-agent/flags"
@@ -96,7 +97,7 @@ func (k8s *K8S) start() {
 				klog.Errorln("Cannot watch events: access forbidden. Update Coroot Operator to proceed.")
 				return
 			}
-			cache.DefaultWatchErrorHandler(r, err)
+			cache.DefaultWatchErrorHandler(context.TODO(), r, err)
 		})
 		eventsLogger := NewEventsLogger()
 		startTime := metav1.Now()

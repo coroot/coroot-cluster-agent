@@ -4,8 +4,10 @@ import (
 	"context"
 
 	"github.com/coroot/coroot-cluster-agent/common"
+	"gopkg.in/yaml.v3"
 	"k8s.io/klog"
 	"k8s.io/kube-state-metrics/v2/pkg/app"
+	crs "k8s.io/kube-state-metrics/v2/pkg/customresourcestate"
 	"k8s.io/kube-state-metrics/v2/pkg/options"
 )
 
@@ -59,6 +61,7 @@ func NewKSM(listenAddr string) (*KSM, error) {
 				"coroot.com/slo-latency-threshold",
 			},
 		},
+		CustomResourceConfig: customResourceConfig(),
 	}
 
 	return &KSM{opts: opts}, nil
@@ -76,4 +79,16 @@ func (ksm *KSM) Start() {
 
 func (ksm *KSM) Stop() {
 	ksm.stop()
+}
+
+func customResourceConfig() string {
+	cfg := crs.Metrics{
+		Spec: crs.MetricsSpec{Resources: fluxcd()},
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		klog.Errorln("can't marshal custom resource config:", err)
+		return ""
+	}
+	return string(data)
 }
