@@ -172,6 +172,7 @@ func k8sDiscovery() *config.ScrapeConfig {
 			{
 				SourceLabels: model.LabelNames{"__address__", "__meta_kubernetes_pod_annotation_coroot_com_metrics_port"},
 				TargetLabel:  "__address__",
+				Separator:    ";",
 				Regex:        relabel.MustNewRegexp(`(.+?)(?::\d+)?;(\d+)`),
 				Replacement:  "$1:$2",
 				Action:       relabel.Replace,
