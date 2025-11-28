@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"crypto/tls"
 	"sync"
 	"time"
 
@@ -37,7 +38,7 @@ type Collector struct {
 	collectTimeout time.Duration
 }
 
-func New(host string, username, password string, collectTimeout time.Duration, logger logger.Logger) *Collector {
+func New(host string, username, password, tlsOpt string, sni string, collectTimeout time.Duration, logger logger.Logger) *Collector {
 	c := &Collector{
 		logger:         logger,
 		collectTimeout: collectTimeout,
@@ -52,6 +53,12 @@ func New(host string, username, password string, collectTimeout time.Duration, l
 		c.clientOpts.SetAuth(options.Credential{
 			Username: username,
 			Password: password,
+		})
+	}
+	if tlsOpt == "true" {
+		c.clientOpts.SetTLSConfig(&tls.Config{
+			ServerName: sni,
+			MinVersion: tls.VersionTLS12,
 		})
 	}
 	return c

@@ -46,6 +46,7 @@ type CredentialsSecret struct {
 type Target struct {
 	Type              TargetType
 	Addr              string
+	Sni               string
 	Credentials       Credentials
 	CredentialsSecret CredentialsSecret
 	Params            map[string]string
@@ -150,10 +151,17 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		t.stop = func() {}
 
 	case TargetTypeMongodb:
+		sni := t.Sni
+		tlsParam := t.Params["tls"]
+		if tlsParam == "" {
+			tlsParam = "false"
+		}
 		collector := mongo.New(
 			t.Addr,
 			credentials.Username,
 			credentials.Password,
+			tlsParam,
+			sni,
 			collectTimeout,
 			t.logger,
 		)
@@ -191,6 +199,7 @@ func TargetFromConfig(i config.ApplicationInstrumentation) *Target {
 	t := &Target{
 		Type: TargetType(i.Type),
 		Addr: net.JoinHostPort(i.Host, i.Port),
+		Sni:  i.Sni,
 		Credentials: Credentials{
 			Username: i.Credentials.Username,
 			Password: i.Credentials.Password,
@@ -270,6 +279,7 @@ func TargetFromPod(pod *k8s.Pod) *Target {
 		t = &Target{
 			Type: TargetTypeMongodb,
 			Addr: net.JoinHostPort(pod.IP, cmp.Or(pod.Annotations["coroot.com/mongodb-scrape-port"], "27017")),
+			Sni:  pod.Id.Name,
 			Credentials: Credentials{
 				Username: pod.Annotations["coroot.com/mongodb-scrape-credentials-username"],
 				Password: pod.Annotations["coroot.com/mongodb-scrape-credentials-password"],
@@ -279,6 +289,9 @@ func TargetFromPod(pod *k8s.Pod) *Target {
 				Name:        pod.Annotations["coroot.com/mongodb-scrape-credentials-secret-name"],
 				UsernameKey: pod.Annotations["coroot.com/mongodb-scrape-credentials-secret-username-key"],
 				PasswordKey: pod.Annotations["coroot.com/mongodb-scrape-credentials-secret-password-key"],
+			},
+			Params: map[string]string{
+				"tls": pod.Annotations["coroot.com/mongodb-scrape-param-tls"],
 			},
 		}
 	}
