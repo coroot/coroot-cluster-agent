@@ -155,7 +155,24 @@ func (ms *Metrics) startExporters() {
 					keys = append(keys, s.PasswordKey)
 				}
 				if len(keys) > 0 {
-					id2Keys[secretId{namespace: s.Namespace, name: s.Name}] = keys
+					id := secretId{namespace: s.Namespace, name: s.Name}
+					id2Keys[id] = append(id2Keys[id], keys...)
+				}
+			}
+			if s := t.TlsSecret; s.Name != "" {
+				var keys []string
+				if s.CaKey != "" {
+					keys = append(keys, s.CaKey)
+				}
+				if s.CertKey != "" {
+					keys = append(keys, s.CertKey)
+				}
+				if s.KeyKey != "" {
+					keys = append(keys, s.KeyKey)
+				}
+				if len(keys) > 0 {
+					id := secretId{namespace: s.Namespace, name: s.Name}
+					id2Keys[id] = append(id2Keys[id], keys...)
 				}
 			}
 		}
@@ -201,7 +218,29 @@ func (ms *Metrics) startExporters() {
 					}
 				}
 			}
-			if err := t.StartExporter(ms.reg, credentials, ms.scrapeInterval, ms.scrapeTimeout); err != nil {
+			tlsData := map[string][]byte{}
+			if s := t.TlsSecret; s.Name != "" {
+				kv := secrets[secretId{namespace: s.Namespace, name: s.Name}]
+				switch {
+				case isSecretsForbidden:
+					t.logger.Errorf("failed to start exporter: secret '%s' forbidden", s.Name)
+					continue
+				case kv == nil:
+					t.logger.Errorf("failed to start exporter: secret '%s' not found", s.Name)
+					continue
+				default:
+					if v := kv[s.CaKey]; v != "" {
+						tlsData[s.CaKey] = []byte(v)
+					}
+					if v := kv[s.CertKey]; v != "" {
+						tlsData[s.CertKey] = []byte(v)
+					}
+					if v := kv[s.KeyKey]; v != "" {
+						tlsData[s.KeyKey] = []byte(v)
+					}
+				}
+			}
+			if err := t.StartExporter(ms.reg, credentials, tlsData, ms.scrapeInterval, ms.scrapeTimeout); err != nil {
 				t.logger.Errorf("failed to start exporter: %s", err)
 				continue
 			}

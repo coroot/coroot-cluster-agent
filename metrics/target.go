@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"cmp"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"maps"
 	"net"
@@ -21,6 +23,22 @@ import (
 	memcached "github.com/prometheus/memcached_exporter/pkg/exporter"
 )
 
+// loadCAFromSecret loads CA certificate from TLS secret data
+func loadCAFromSecret(tlsData map[string][]byte, caKey string) (*x509.CertPool, error) {
+	if len(tlsData) == 0 {
+		return nil, fmt.Errorf("TLS secret is required")
+	}
+	ca, ok := tlsData[caKey]
+	if !ok || len(ca) == 0 {
+		return nil, fmt.Errorf("CA certificate not found in secret (key: %s)", caKey)
+	}
+	rootCAs := x509.NewCertPool()
+	if !rootCAs.AppendCertsFromPEM(ca) {
+		return nil, fmt.Errorf("failed to parse CA certificate")
+	}
+	return rootCAs, nil
+}
+
 type TargetType string
 
 const (
@@ -29,6 +47,15 @@ const (
 	TargetTypeRedis     TargetType = "redis"
 	TargetTypeMongodb   TargetType = "mongodb"
 	TargetTypeMemcached TargetType = "memcached"
+)
+
+// SSL mode constants for MongoDB
+const (
+	SSLModeDisable      = "disable"
+	SSLModeRequire      = "require"
+	SSLModeVerifySystem = "verify-system"
+	SSLModeVerifyCA     = "verify-ca"
+	SSLModeVerifyFull   = "verify-full"
 )
 
 type Credentials struct {
@@ -43,12 +70,22 @@ type CredentialsSecret struct {
 	PasswordKey string
 }
 
+type TlsSecret struct {
+	Namespace string
+	Name      string
+	CaKey     string
+	CertKey   string
+	KeyKey    string
+}
+
 type Target struct {
 	Type              TargetType
 	Addr              string
 	Credentials       Credentials
 	CredentialsSecret CredentialsSecret
 	Params            map[string]string
+
+	TlsSecret TlsSecret
 
 	Description                  string
 	DiscoveredFromPodAnnotations bool
@@ -63,7 +100,8 @@ func (t *Target) Equal(other *Target) bool {
 		t.Addr == other.Addr &&
 		t.Credentials == other.Credentials &&
 		t.CredentialsSecret == other.CredentialsSecret &&
-		maps.Equal(t.Params, other.Params)
+		maps.Equal(t.Params, other.Params) &&
+		t.TlsSecret == other.TlsSecret
 }
 
 func (t *Target) Describe(ch chan<- *prometheus.Desc) {
@@ -90,7 +128,7 @@ func (t *Target) IsExporterStarted() bool {
 	return t.coll != nil
 }
 
-func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, scrapeInterval, scrapeTimeout time.Duration) error {
+func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, tlsData map[string][]byte, scrapeInterval, scrapeTimeout time.Duration) error {
 	collectTimeout := scrapeTimeout - time.Second
 	if collectTimeout <= 0 {
 		collectTimeout = time.Second
@@ -150,11 +188,75 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		t.stop = func() {}
 
 	case TargetTypeMongodb:
+		var tlsConfig *tls.Config
+		sslmode := cmp.Or(t.Params["sslmode"], SSLModeDisable)
+
+		switch sslmode {
+		case SSLModeDisable:
+			// TLS disabled
+			tlsConfig = nil
+			t.logger.Warning("TLS mode: disable (insecure - no encryption)")
+
+		case SSLModeRequire:
+			// TLS without certificate verification (like skip-verify)
+			tlsConfig = &tls.Config{InsecureSkipVerify: true}
+			t.logger.Warning("TLS mode: require (insecure - certificate verification disabled)")
+
+		case SSLModeVerifySystem:
+			// TLS with system CA pool (for public CAs like Let's Encrypt)
+			tlsConfig = &tls.Config{}
+			// RootCAs = nil uses the host's root CA set
+			t.logger.Info("TLS mode: verify-system (using system CA pool)")
+
+		case SSLModeVerifyCA:
+			// TLS with CA verification from Secret
+			tlsConfig = &tls.Config{}
+			rootCAs, err := loadCAFromSecret(tlsData, t.TlsSecret.CaKey)
+			if err != nil {
+				return fmt.Errorf("TLS mode 'verify-ca': %w", err)
+			}
+			tlsConfig.RootCAs = rootCAs
+			t.logger.Info("TLS mode: verify-ca (CA loaded from secret)")
+
+		case SSLModeVerifyFull:
+			// TLS with CA verification + hostname verification + optional client cert (mTLS)
+			host, _, err := net.SplitHostPort(t.Addr)
+			if err != nil {
+				host = t.Addr
+			}
+			tlsConfig = &tls.Config{
+				ServerName: host, // Enable hostname verification
+			}
+			rootCAs, err := loadCAFromSecret(tlsData, t.TlsSecret.CaKey)
+			if err != nil {
+				return fmt.Errorf("TLS mode 'verify-full': %w", err)
+			}
+			tlsConfig.RootCAs = rootCAs
+
+			// Optional client certificate for mTLS
+			cert, hasCert := tlsData[t.TlsSecret.CertKey]
+			key, hasKey := tlsData[t.TlsSecret.KeyKey]
+			if hasCert && hasKey && len(cert) > 0 && len(key) > 0 {
+				certificate, err := tls.X509KeyPair(cert, key)
+				if err != nil {
+					return fmt.Errorf("failed to load client certificate: %w", err)
+				}
+				tlsConfig.Certificates = []tls.Certificate{certificate}
+				t.logger.Info("TLS mode: verify-full with mTLS (CA and client certificate loaded, hostname verification enabled)")
+			} else {
+				t.logger.Info("TLS mode: verify-full (CA loaded from secret, hostname verification enabled)")
+			}
+
+		default:
+			return fmt.Errorf("unsupported sslmode '%s' for MongoDB, supported: disable, require, verify-system, verify-ca, verify-full", sslmode)
+		}
+		
 		collector := mongo.New(
 			t.Addr,
 			credentials.Username,
 			credentials.Password,
 			collectTimeout,
+			tlsConfig,
 			t.logger,
 		)
 		t.coll = collector
@@ -280,6 +382,16 @@ func TargetFromPod(pod *k8s.Pod) *Target {
 				UsernameKey: pod.Annotations["coroot.com/mongodb-scrape-credentials-secret-username-key"],
 				PasswordKey: pod.Annotations["coroot.com/mongodb-scrape-credentials-secret-password-key"],
 			},
+			Params: map[string]string{
+				"sslmode": pod.Annotations["coroot.com/mongodb-scrape-param-sslmode"],
+			},
+			TlsSecret: TlsSecret{
+				Namespace: pod.Id.Namespace,
+				Name:      pod.Annotations["coroot.com/mongodb-scrape-tls-secret-name"],
+				CaKey:     cmp.Or(pod.Annotations["coroot.com/mongodb-scrape-tls-secret-ca-key"], "ca.crt"),
+				CertKey:   cmp.Or(pod.Annotations["coroot.com/mongodb-scrape-tls-secret-cert-key"], "tls.crt"),
+				KeyKey:    cmp.Or(pod.Annotations["coroot.com/mongodb-scrape-tls-secret-key-key"], "tls.key"),
+			},
 		}
 	}
 
@@ -298,3 +410,4 @@ func TargetFromPod(pod *k8s.Pod) *Target {
 
 	return t
 }
+

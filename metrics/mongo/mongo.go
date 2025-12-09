@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"crypto/tls"
 	"sync"
 	"time"
 
@@ -37,7 +38,7 @@ type Collector struct {
 	collectTimeout time.Duration
 }
 
-func New(host string, username, password string, collectTimeout time.Duration, logger logger.Logger) *Collector {
+func New(host string, username, password string, collectTimeout time.Duration, tlsConfig *tls.Config, logger logger.Logger) *Collector {
 	c := &Collector{
 		logger:         logger,
 		collectTimeout: collectTimeout,
@@ -48,6 +49,9 @@ func New(host string, username, password string, collectTimeout time.Duration, l
 		SetAppName("coroot-mongodb-agent").
 		SetServerSelectionTimeout(collectTimeout).
 		SetConnectTimeout(collectTimeout)
+	if tlsConfig != nil {
+		c.clientOpts.SetTLSConfig(tlsConfig)
+	}
 	if username != "" {
 		c.clientOpts.SetAuth(options.Credential{
 			Username: username,

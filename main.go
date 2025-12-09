@@ -19,6 +19,7 @@ var (
 )
 
 func main() {
+	flags.Parse()
 	klog.Infoln("version:", version)
 
 	router := mux.NewRouter()
