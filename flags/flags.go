@@ -29,6 +29,11 @@ var (
 
 func init() {
 	kingpin.HelpFlag.Short('h').Hidden()
+}
+
+// Parse parses command-line flags and validates required options.
+// Must be called from main() before using flag values.
+func Parse() {
 	kingpin.Parse()
 
 	if *CorootURL == nil {
