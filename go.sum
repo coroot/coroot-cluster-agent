@@ -102,8 +102,8 @@ github.com/coreos/go-systemd/v22 v22.6.0 h1:aGVa/v8B7hpb0TKl0MWoAavPDmHvobFe5R5z
 github.com/coreos/go-systemd/v22 v22.6.0/go.mod h1:iG+pp635Fo7ZmV/j14KUcmEyWF+0X7Lua8rrTWzYgWU=
 github.com/coroot/coroot-pg-agent v1.2.9 h1:+c8wjgXPHiKQF5WDbdOfCnt/+ONjBswHMZMZs7TnA7Q=
 github.com/coroot/coroot-pg-agent v1.2.9/go.mod h1:8z3BLlH1tAN3mzKgguLkgznFBetwopHgI5v2snXanOg=
-github.com/coroot/kube-state-metrics/v2 v2.0.0-20251029074931-07e85c1a5801 h1:rt2ff6ODl690c7H1ZLfng4MX5hgpc/s38iD2KOu8A4E=
-github.com/coroot/kube-state-metrics/v2 v2.0.0-20251029074931-07e85c1a5801/go.mod h1:TwiicKKtt9erry2a1U8KqQWbiVVvH1CKEmZu3wT3pYc=
+github.com/coroot/kube-state-metrics/v2 v2.17.2 h1:1o7E8kl5+se+JTx+2JbNFdcLiaWNchcBlWJr6X09HAw=
+github.com/coroot/kube-state-metrics/v2 v2.17.2/go.mod h1:TwiicKKtt9erry2a1U8KqQWbiVVvH1CKEmZu3wT3pYc=
 github.com/coroot/logger v1.0.0 h1:n8iNkGk6ete9wp/L49FXsZlNiySuA+IJ7TsTkYkiqPc=
 github.com/coroot/logger v1.0.0/go.mod h1:rEO5EQqDbB4bnCoo5Ot9Dj51Bkl40RUVqB03rba54HE=
 github.com/coroot/logparser v1.1.3 h1:fjRgRkVtCJDvRaeIxaTo2d8Nvn8Yy+gDIfjFK6ZXY5E=
