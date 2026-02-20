@@ -11,6 +11,7 @@ import (
 
 	"github.com/coroot/coroot-cluster-agent/config"
 	"github.com/coroot/coroot-cluster-agent/k8s"
+	kafka "github.com/coroot/coroot-cluster-agent/metrics/kafka"
 	"github.com/coroot/coroot-cluster-agent/metrics/mongo"
 	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
 	postgres "github.com/coroot/coroot-pg-agent/collector"
@@ -29,6 +30,7 @@ const (
 	TargetTypeRedis     TargetType = "redis"
 	TargetTypeMongodb   TargetType = "mongodb"
 	TargetTypeMemcached TargetType = "memcached"
+	TargetTypeKafka     TargetType = "kafka"
 )
 
 type Credentials struct {
@@ -167,6 +169,16 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			level.NewFilter(&promLogger{l: t.logger}, level.AllowInfo()),
 			nil,
 		)
+		t.coll = collector
+		t.stop = func() {}
+
+	case TargetTypeKafka:
+		opts := kafka.NewKafkaOpts()
+		opts.Uri = []string{t.Addr}
+		collector, err := kafka.NewExporter(opts)
+		if err != nil {
+			return err
+		}
 		t.coll = collector
 		t.stop = func() {}
 
