@@ -302,7 +302,7 @@ func TargetFromPod(pod *k8s.Pod) *Target {
 		}
 	}
 
-	if pod.Annotations["coroot.com/kafka-scrape"] == "true" {
+	if pod.Annotations["coroot.com/kafka-scrape"] == "true" && pod.Annotations["coroot.com/kafka-cluster-id"] != "" {
 		t = &Target{
 			Type: TargetTypeKafka,
 			Addr: net.JoinHostPort(pod.IP, cmp.Or(pod.Annotations["coroot.com/kafka-scrape-port"], "9092")),
