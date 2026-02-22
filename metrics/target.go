@@ -175,7 +175,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 	case TargetTypeKafka:
 		opts := kafka.NewKafkaOpts()
 		opts.Uri = []string{t.Addr}
-		collector, err := kafka.NewExporter(opts)
+		collector, err := kafka.NewExporter(opts, t.logger)
 		if err != nil {
 			return err
 		}
@@ -299,6 +299,13 @@ func TargetFromPod(pod *k8s.Pod) *Target {
 		t = &Target{
 			Type: TargetTypeMemcached,
 			Addr: net.JoinHostPort(pod.IP, cmp.Or(pod.Annotations["coroot.com/memcached-scrape-port"], "11211")),
+		}
+	}
+
+	if pod.Annotations["coroot.com/kafka-scrape"] == "true" {
+		t = &Target{
+			Type: TargetTypeKafka,
+			Addr: net.JoinHostPort(pod.IP, cmp.Or(pod.Annotations["coroot.com/kafka-scrape-port"], "9092")),
 		}
 	}
 
