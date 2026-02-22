@@ -306,6 +306,9 @@ func TargetFromPod(pod *k8s.Pod) *Target {
 		t = &Target{
 			Type: TargetTypeKafka,
 			Addr: net.JoinHostPort(pod.IP, cmp.Or(pod.Annotations["coroot.com/kafka-scrape-port"], "9092")),
+			Params: map[string]string{
+				"cluster_id": pod.Annotations["coroot.com/kafka-cluster-id"],
+			},
 		}
 	}
 
