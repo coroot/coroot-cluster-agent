@@ -102,7 +102,7 @@ type KafkaOpts struct {
 	TlsCertFile              string   `default:""`
 	TlsKeyFile               string   `default:""`
 	TlsInsecureSkipTLSVerify bool     `default:"false"`
-	KafkaVersion             string   `default:"2.0.0.0"`
+	KafkaVersion             string   `default:"3.0.0.0"`
 	UseZooKeeperLag          bool     `default:"false"`
 	UriZookeeper             []string `default:"localhost:2181"`
 	Labels                   string   `default:""`
@@ -140,7 +140,7 @@ func NewKafkaOpts() KafkaOpts {
 		TlsCertFile:              "",
 		TlsKeyFile:               "",
 		TlsInsecureSkipTLSVerify: false,
-		KafkaVersion:             sarama.V2_0_0_0.String(),
+		KafkaVersion:             sarama.V3_0_0_0.String(),
 		UseZooKeeperLag:          false,
 		UriZookeeper:             []string{"localhost:2181"},
 		Labels:                   "",
@@ -890,12 +890,21 @@ func (e *Exporter) getBrokerProtocolVersion(brokerID int32) string {
 		return "UNKNOWN"
 	}
 
+	// inter.broker.protocol.version is used by ZooKeeper-based brokers.
 	for _, entry := range configEntries {
-		if entry.Name == "inter.broker.protocol.version" {
+		if entry.Name == "inter.broker.protocol.version" && entry.Value != "" {
 			return entry.Value
 		}
 	}
 
-	e.logger.Warning(fmt.Errorf("inter.broker.protocol.version not found"))
+	// KRaft-based brokers do not have inter.broker.protocol.version; fall back
+	// to metadata.version which serves the equivalent role in KRaft mode.
+	for _, entry := range configEntries {
+		if entry.Name == "metadata.version" && entry.Value != "" {
+			return entry.Value
+		}
+	}
+
+	e.logger.Warning(fmt.Errorf("protocol version not found in broker config (tried inter.broker.protocol.version and metadata.version)"))
 	return "UNKNOWN"
 }
