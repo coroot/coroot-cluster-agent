@@ -51,7 +51,7 @@ var (
 	consumergroupLagSum                = common.Desc("kafka_consumergroup_lag_sum", "Sum of lag for a consumer group", "consumergroup", "topic")
 	consumergroupLagZookeeper          = common.Desc("kafka_consumergroupzookeeper_lag_zookeeper", "Lag of a consumer group from ZooKeeper", "consumergroup", "topic", "partition")
 	consumergroupMembers               = common.Desc("kafka_consumergroup_members", "Number of members in a consumer group", "consumergroup")
-	describeConfigTopic                = common.Desc("kafka_topic_config", "Configuration of a Kafka topic", "topic", "cleanup_policy", "retention_ms", "max_message_bytes", "segment_bytes", "retention_bytes")
+	topicConfigDesc                    = common.Desc("kafka_topic_config", "Configuration of a Kafka topic", "topic", "cleanup_policy", "retention_ms", "max_message_bytes", "segment_bytes", "retention_bytes")
 )
 
 // Exporter collects Kafka stats from the given server and exports them using
@@ -438,6 +438,7 @@ func (e *Exporter) fetchOffsetVersion() int16 {
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- clusterBrokers
 	ch <- clusterBrokerInfo
+	ch <- topicConfigDesc
 	ch <- topicCurrentOffset
 	ch <- topicOldestOffset
 	ch <- topicPartitions
@@ -585,7 +586,7 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) {
 		}
 
 		ch <- common.Gauge(
-			describeConfigTopic, 1, topic, topicConfig.CleanupPolicy, topicConfig.RetentionMs, topicConfig.MaxMessageBytes, topicConfig.SegmentBytes, topicConfig.RetentionBytes,
+			topicConfigDesc, 1, topic, topicConfig.CleanupPolicy, topicConfig.RetentionMs, topicConfig.MaxMessageBytes, topicConfig.SegmentBytes, topicConfig.RetentionBytes,
 		)
 	}
 
