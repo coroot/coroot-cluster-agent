@@ -63,7 +63,7 @@ type Exporter struct {
 	topicExclude            *regexp.Regexp
 	groupFilter             *regexp.Regexp
 	groupExclude            *regexp.Regexp
-	mu                      sync.RWMutex
+	mu                      sync.Mutex
 	useZooKeeperLag         bool
 	zookeeperClient         *kazoo.Kazoo
 	nextMetadataRefresh     time.Time
@@ -76,11 +76,6 @@ type Exporter struct {
 	sgChans                 []chan<- prometheus.Metric
 	consumerGroupFetchAll   bool
 	logger                  logger.Logger
-}
-
-type deferredGroupTask struct {
-	group  *sarama.GroupDescription
-	blocks map[string]map[int32]*sarama.OffsetFetchResponseBlock
 }
 
 type TopicConfig struct {
@@ -506,12 +501,7 @@ func (e *Exporter) collectChans(quit chan struct{}) {
 }
 
 func (e *Exporter) collect(ch chan<- prometheus.Metric) {
-	startTime := time.Now()
-	defer func() {
-		duration := time.Since(startTime)
-		e.logger.Info("collect process took %v", duration)
-	}()
-
+	wg := sync.WaitGroup{}
 	brokers, controllerId, err := e.adminClient.DescribeCluster()
 	if err != nil {
 		e.logger.Errorf("Cannot describe cluster, using client broker list: %v", err)
@@ -534,23 +524,22 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) {
 	}
 
 	offset := make(map[string]map[int32]int64)
-	// initialize the topic partition leader mapping
-	topicPartitionLeaders := make(map[string]map[int32]int32)
+
 	now := time.Now()
 
 	if now.After(e.nextMetadataRefresh) {
-		e.logger.Info("Refreshing client metadata")
+		e.logger.Info("refreshing client metadata")
+
 		if err := e.client.RefreshMetadata(); err != nil {
-			e.logger.Errorf("Cannot refresh topics, using cached data: %v", err)
+			e.logger.Warning(fmt.Errorf("cannot refresh topics, using cached data: %w", err))
 		}
+
 		e.nextMetadataRefresh = now.Add(e.metadataRefreshInterval)
 	}
 
-	// ==================== Phase 1: Collect Topic Metrics ====================
-	phase1Start := time.Now()
 	topics, err := e.client.Topics()
 	if err != nil {
-		e.logger.Errorf("Cannot get topics: %v", err)
+		e.logger.Warning(fmt.Errorf("cannot get topics: %w", err))
 		return
 	}
 
@@ -590,58 +579,60 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) {
 		)
 	}
 
-	e.logger.Infof("Phase 1: Fetching topic offsets, Found %v topics", len(topics))
-	// initialize the broker newest offset and oldest offset requests
-	brokerNewestOffsetRequests := make(map[int32]*sarama.OffsetRequest)
-	brokerOldestOffsetRequests := make(map[int32]*sarama.OffsetRequest)
+	topicChannel := make(chan string)
 
-	// iterate through all topic partitions, group by leader
-	for _, topic := range topics {
+	getTopicMetrics := func(topic string) {
+		defer wg.Done()
+
 		if !e.topicFilter.MatchString(topic) || e.topicExclude.MatchString(topic) {
-			continue
+			return
 		}
 
 		partitions, err := e.client.Partitions(topic)
 		if err != nil {
-			e.logger.Errorf("Cannot get partitions of topic %s: %v", topic, err)
-			continue
+			e.logger.Warning(fmt.Errorf("cannot get partitions of topic %s: %w", topic, err))
+			return
 		}
 		ch <- common.Gauge(
 			topicPartitions, float64(len(partitions)), topic,
 		)
 		e.mu.Lock()
 		offset[topic] = make(map[int32]int64, len(partitions))
-		topicPartitionLeaders[topic] = make(map[int32]int32, len(partitions))
 		e.mu.Unlock()
 		for _, partition := range partitions {
-			leader, err := e.client.Leader(topic, partition)
+			broker, err := e.client.Leader(topic, partition)
 			if err != nil {
-				e.logger.Errorf("Cannot get leader of topic %s partition %d: %v", topic, partition, err)
-				continue
+				e.logger.Warning(fmt.Errorf("cannot get leader of topic %s partition %d: %w", topic, partition, err))
+			} else {
+				ch <- common.Gauge(
+					topicPartitionLeader, float64(broker.ID()), topic, strconv.FormatInt(int64(partition), 10),
+				)
 			}
-			e.mu.Lock()
-			topicPartitionLeaders[topic][partition] = leader.ID()
-			e.mu.Unlock()
 
-			ch <- common.Gauge(
-				topicPartitionLeader, float64(leader.ID()), topic, strconv.FormatInt(int64(partition), 10),
-			)
-
-			// build the newest offset request
-			if _, ok := brokerNewestOffsetRequests[leader.ID()]; !ok {
-				brokerNewestOffsetRequests[leader.ID()] = &sarama.OffsetRequest{}
+			currentOffset, err := e.client.GetOffset(topic, partition, sarama.OffsetNewest)
+			if err != nil {
+				e.logger.Warning(fmt.Errorf("cannot get current offset of topic %s partition %d: %w", topic, partition, err))
+			} else {
+				e.mu.Lock()
+				offset[topic][partition] = currentOffset
+				e.mu.Unlock()
+				ch <- common.Gauge(
+					topicCurrentOffset, float64(currentOffset), topic, strconv.FormatInt(int64(partition), 10),
+				)
 			}
-			brokerNewestOffsetRequests[leader.ID()].AddBlock(topic, partition, sarama.OffsetNewest, 1)
 
-			// build the oldest offset request
-			if _, ok := brokerOldestOffsetRequests[leader.ID()]; !ok {
-				brokerOldestOffsetRequests[leader.ID()] = &sarama.OffsetRequest{}
+			oldestOffset, err := e.client.GetOffset(topic, partition, sarama.OffsetOldest)
+			if err != nil {
+				e.logger.Warning(fmt.Errorf("cannot get oldest offset of topic %s partition %d: %w", topic, partition, err))
+			} else {
+				ch <- common.Gauge(
+					topicOldestOffset, float64(oldestOffset), topic, strconv.FormatInt(int64(partition), 10),
+				)
 			}
-			brokerOldestOffsetRequests[leader.ID()].AddBlock(topic, partition, sarama.OffsetOldest, 1)
 
 			replicas, err := e.client.Replicas(topic, partition)
 			if err != nil {
-				e.logger.Errorf("Cannot get replicas of topic %s partition %d: %v", topic, partition, err)
+				e.logger.Warning(fmt.Errorf("cannot get replicas of topic %s partition %d: %w", topic, partition, err))
 			} else {
 				ch <- common.Gauge(
 					topicPartitionReplicas, float64(len(replicas)), topic, strconv.FormatInt(int64(partition), 10),
@@ -650,14 +641,14 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) {
 
 			inSyncReplicas, err := e.client.InSyncReplicas(topic, partition)
 			if err != nil {
-				e.logger.Errorf("Cannot get in-sync replicas of topic %s partition %d: %v", topic, partition, err)
+				e.logger.Warning(fmt.Errorf("cannot get in-sync replicas of topic %s partition %d: %w", topic, partition, err))
 			} else {
 				ch <- common.Gauge(
 					topicPartitionInSyncReplicas, float64(len(inSyncReplicas)), topic, strconv.FormatInt(int64(partition), 10),
 				)
 			}
 
-			if leader != nil && replicas != nil && len(replicas) > 0 && leader.ID() == replicas[0] {
+			if broker != nil && replicas != nil && len(replicas) > 0 && broker.ID() == replicas[0] {
 				ch <- common.Gauge(
 					topicPartitionUsesPreferredReplica, float64(1), topic, strconv.FormatInt(int64(partition), 10),
 				)
@@ -676,111 +667,76 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) {
 					topicUnderReplicatedPartition, float64(0), topic, strconv.FormatInt(int64(partition), 10),
 				)
 			}
-		}
-	}
 
-	var offsetWg sync.WaitGroup
-	fetchOffsetsFromBroker := func(brokerID int32, req *sarama.OffsetRequest, isNewest bool) {
-		defer offsetWg.Done()
-
-		broker, err := e.client.Broker(brokerID)
-		if err != nil || broker == nil {
-			e.logger.Errorf("Cannot get broker %d (nil: %v): %v", brokerID, broker == nil, err)
-			return
-		}
-
-		// send the batch request to get topic partition offsets
-		resp, err := broker.GetAvailableOffsets(req)
-		if err != nil {
-			e.logger.Errorf("Cannot get offsets from broker %d: %v", brokerID, err)
-			return
-		}
-
-		// parse and report the topic partition offsets
-		for topic, partitions := range resp.Blocks {
-			for partition, block := range partitions {
-				if block.Err != sarama.ErrNoError {
-					e.logger.Errorf("Error fetching offset for %s:%d from broker %d: %v", topic, partition, brokerID, block.Err)
-					continue
+			if e.useZooKeeperLag {
+				ConsumerGroups, err := e.zookeeperClient.Consumergroups()
+				if err != nil {
+					e.logger.Warning(fmt.Errorf("cannot get consumer group: %w", err))
 				}
 
-				val := block.Offsets[0]
-				if isNewest {
-					e.mu.Lock()
-					offset[topic][partition] = val
-					e.mu.Unlock()
-					ch <- common.Gauge(
-						topicCurrentOffset, float64(val),
-						topic, strconv.FormatInt(int64(partition), 10),
-					)
-				} else {
-					ch <- common.Gauge(
-						topicOldestOffset, float64(val),
-						topic, strconv.FormatInt(int64(partition), 10),
-					)
-				}
-			}
-		}
-	}
+				for _, group := range ConsumerGroups {
+					offset, _ := group.FetchOffset(topic, partition)
+					if offset > 0 {
 
-	for bid, req := range brokerNewestOffsetRequests {
-		offsetWg.Add(1)
-		go fetchOffsetsFromBroker(bid, req, true)
-	}
-
-	for bid, req := range brokerOldestOffsetRequests {
-		offsetWg.Add(1)
-		go fetchOffsetsFromBroker(bid, req, false)
-	}
-
-	offsetWg.Wait()
-
-	if e.useZooKeeperLag {
-		ConsumerGroups, err := e.zookeeperClient.Consumergroups()
-		if err != nil {
-			e.logger.Errorf("Cannot get consumer group %v", err)
-		} else {
-			for _, group := range ConsumerGroups {
-				for topic, partitions := range offset {
-					for partition := range partitions {
-						zkOffset, _ := group.FetchOffset(topic, partition)
-						if zkOffset > 0 {
-							e.mu.RLock()
-							currentOffset := offset[topic][partition]
-							e.mu.RUnlock()
-							consumerGroupLag := currentOffset - zkOffset
-							ch <- common.Gauge(
-								consumergroupLagZookeeper, float64(consumerGroupLag),
-								group.Name, topic, strconv.FormatInt(int64(partition), 10),
-							)
-						}
+						consumerGroupLag := currentOffset - offset
+						ch <- common.Gauge(
+							consumergroupLagZookeeper, float64(consumerGroupLag), group.Name, topic, strconv.FormatInt(int64(partition), 10),
+						)
 					}
 				}
 			}
 		}
 	}
 
-	e.logger.Info("Phase 1 (Topic Offsets) took %v", time.Since(phase1Start))
+	loopTopics := func() {
+		ok := true
+		for ok {
+			topic, open := <-topicChannel
+			ok = open
+			if open {
+				getTopicMetrics(topic)
+			}
+		}
+	}
 
-	// ==================== Phase 2: Collect Group Metrics and Calculate Lag ====================
-	phase2Start := time.Now()
-	e.logger.Info("Phase 2: Fetching consumer group offsets and calculating lag")
+	minx := func(x int, y int) int {
+		if x < y {
+			return x
+		} else {
+			return y
+		}
+	}
 
-	var cgWg sync.WaitGroup
-	var deferredTasks []*deferredGroupTask
-	var tasksMu sync.Mutex
+	N := len(topics)
+	if N > 1 {
+		N = minx(N/2, e.topicWorkers)
+	}
 
-	processConsumerGroup := func(broker *sarama.Broker) {
-		defer cgWg.Done()
+	for w := 1; w <= N; w++ {
+		go loopTopics()
+	}
+
+	for _, topic := range topics {
+		if e.topicFilter.MatchString(topic) && !e.topicExclude.MatchString(topic) {
+			wg.Add(1)
+			topicChannel <- topic
+		}
+	}
+	close(topicChannel)
+
+	wg.Wait()
+
+	getConsumerGroupMetrics := func(broker *sarama.Broker) {
+		defer wg.Done()
 		if err := broker.Open(e.client.Config()); err != nil && err != sarama.ErrAlreadyConnected {
-			e.logger.Errorf("Cannot connect to broker %d: %v", broker.ID(), err)
+			e.logger.Warning(fmt.Errorf("cannot connect to broker %d: %w", broker.ID(), err))
 			return
 		}
 		defer broker.Close()
 
 		groups, err := broker.ListGroups(&sarama.ListGroupsRequest{})
 		if err != nil {
-			e.logger.Errorf("Cannot get consumer group: %v", err)
+			e.logger.Warning(fmt.Errorf("cannot get consumer group: %w", err))
 			return
 		}
 		groupIds := make([]string, 0)
@@ -792,250 +748,131 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) {
 
 		describeGroups, err := broker.DescribeGroups(&sarama.DescribeGroupsRequest{Groups: groupIds})
 		if err != nil {
-			e.logger.Errorf("Cannot get describe groups: %v", err)
+			e.logger.Warning(fmt.Errorf("cannot get describe groups: %w", err))
 			return
 		}
 		for _, group := range describeGroups.Groups {
 			if group.Err != 0 {
-				e.logger.Errorf("Cannot describe for the group %s with error code %d", group.GroupId, group.Err)
+				e.logger.Warning(fmt.Errorf("cannot describe for the group %s with error code %d", group.GroupId, group.Err))
+				continue
+			}
+			offsetFetchRequest := sarama.OffsetFetchRequest{ConsumerGroup: group.GroupId, Version: e.fetchOffsetVersion()}
+			if e.offsetShowAll {
+				for topic, partitions := range offset {
+					for partition := range partitions {
+						offsetFetchRequest.AddPartition(topic, partition)
+					}
+				}
+			} else {
+				for _, member := range group.Members {
+					if len(member.MemberAssignment) == 0 {
+						e.logger.Warning(fmt.Errorf("memberAssignment is empty for group member: %v in group: %v", member.MemberId, group.GroupId))
+						continue
+					}
+					assignment, err := member.GetMemberAssignment()
+					if err != nil {
+						e.logger.Warning(fmt.Errorf("cannot get getMemberAssignment of group member %v: %w", member, err))
+						continue
+					}
+					for topic, partions := range assignment.Topics {
+						for _, partition := range partions {
+							offsetFetchRequest.AddPartition(topic, partition)
+						}
+					}
+				}
+			}
+			ch <- common.Gauge(
+				consumergroupMembers, float64(len(group.Members)), group.GroupId,
+			)
+			offsetFetchResponse, err := broker.FetchOffset(&offsetFetchRequest)
+			if err != nil {
+				e.logger.Warning(fmt.Errorf("cannot get offset of group %s: %w", group.GroupId, err))
 				continue
 			}
 
-			// calculate and export the group metrics, if have nagetive group lag, will be deferred to be processed later
-			task := e.emitGroupMetric(group, broker, offset, topicPartitionLeaders, ch)
-			if task != nil {
-				tasksMu.Lock()
-				deferredTasks = append(deferredTasks, task)
-				tasksMu.Unlock()
+			for topic, partitions := range offsetFetchResponse.Blocks {
+				// If the topic is not consumed by that consumer group, skip it
+				topicConsumed := false
+				for _, offsetFetchResponseBlock := range partitions {
+					// Kafka will return -1 if there is no offset associated with a topic-partition under that consumer group
+					if offsetFetchResponseBlock.Offset != -1 {
+						topicConsumed = true
+						break
+					}
+				}
+				if !topicConsumed {
+					continue
+				}
+
+				var currentOffsetSum int64
+				var lagSum int64
+				for partition, offsetFetchResponseBlock := range partitions {
+					err := offsetFetchResponseBlock.Err
+					if err != sarama.ErrNoError {
+						e.logger.Warning(fmt.Errorf("error for partition %d: %v", partition, err.Error()))
+						continue
+					}
+					currentOffset := offsetFetchResponseBlock.Offset
+					currentOffsetSum += currentOffset
+					ch <- common.Gauge(
+						consumergroupCurrentOffset, float64(currentOffset), group.GroupId, topic, strconv.FormatInt(int64(partition), 10),
+					)
+					e.mu.Lock()
+					currentPartitionOffset, currentPartitionOffsetError := e.client.GetOffset(topic, partition, sarama.OffsetNewest)
+					if currentPartitionOffsetError != nil {
+						e.logger.Warning(fmt.Errorf("cannot get current offset of topic %s partition %d: %w", topic, partition, currentPartitionOffsetError))
+					} else {
+						var lag int64
+						if offsetFetchResponseBlock.Offset == -1 {
+							lag = -1
+						} else {
+							if offset, ok := offset[topic][partition]; ok {
+								if currentPartitionOffset == -1 {
+									currentPartitionOffset = offset
+								}
+							}
+							lag = currentPartitionOffset - offsetFetchResponseBlock.Offset
+							lagSum += lag
+						}
+
+						ch <- common.Gauge(
+							consumergroupLag, float64(lag), group.GroupId, topic, strconv.FormatInt(int64(partition), 10),
+						)
+					}
+					e.mu.Unlock()
+				}
+				ch <- common.Gauge(
+					consumergroupCurrentOffsetSum, float64(currentOffsetSum), group.GroupId, topic,
+				)
+				ch <- common.Gauge(
+					consumergroupLagSum, float64(lagSum), group.GroupId, topic,
+				)
 			}
 		}
 	}
 
+	e.logger.Info("fetching consumer group metrics")
 	if len(e.client.Brokers()) > 0 {
 		uniqueBrokerAddresses := make(map[string]bool)
-		var servers []*sarama.Broker
+		var servers []string
 		for _, broker := range e.client.Brokers() {
 			normalizedAddress := strings.ToLower(broker.Addr())
 			if !uniqueBrokerAddresses[normalizedAddress] {
 				uniqueBrokerAddresses[normalizedAddress] = true
-				servers = append(servers, broker)
+				servers = append(servers, broker.Addr())
 			}
 		}
-
-		for _, broker := range servers {
-			cgWg.Add(1)
-			go processConsumerGroup(broker)
+		e.logger.Info(fmt.Sprintf("discovered %d unique broker(s)", len(servers)))
+		for _, broker := range e.client.Brokers() {
+			for _, server := range servers {
+				if server == broker.Addr() {
+					wg.Add(1)
+					go getConsumerGroupMetrics(broker)
+				}
+			}
 		}
-
-		cgWg.Wait()
-		e.logger.Info("All processConsumerGroup goroutines completed")
+		wg.Wait()
 	} else {
-		e.logger.Error("No valid broker, cannot get consumer group metrics")
-	}
-
-	e.logger.Info("Phase 2 (Consumer Group Offsets + Lag) took %v", time.Since(phase2Start))
-
-	// ==================== Phase 3: Process the case if the group lag is negative ====================
-	phase3Start := time.Now()
-	if len(deferredTasks) > 0 {
-		e.logger.Info("Phase 3: Processing %d groups with negative lag", len(deferredTasks))
-
-		// 1. summarize all the topic partitions that need to be re-fetched
-		toRefresh := make(map[int32]*sarama.OffsetRequest)
-		for _, task := range deferredTasks {
-			for topic, partitions := range task.blocks {
-				for partition, block := range partitions {
-					e.mu.RLock()
-					lag := offset[topic][partition] - block.Offset
-					e.mu.RUnlock()
-
-					if block.Offset != -1 && lag < 0 {
-						e.mu.RLock()
-						bid := topicPartitionLeaders[topic][partition]
-						e.mu.RUnlock()
-						if _, ok := toRefresh[bid]; !ok {
-							toRefresh[bid] = &sarama.OffsetRequest{}
-						}
-						toRefresh[bid].AddBlock(topic, partition, sarama.OffsetNewest, 1)
-					}
-				}
-			}
-		}
-
-		// 2. send the batch request to get the new topic partition offsets and update the global offsetMap
-		var refreshWg sync.WaitGroup
-		for bid, req := range toRefresh {
-			refreshWg.Add(1)
-			go func(id int32, r *sarama.OffsetRequest) {
-				defer refreshWg.Done()
-				b, err := e.client.Broker(id)
-				if err != nil || b == nil {
-					e.logger.Errorf("Cannot get broker %d (it might be nil): %v", id, err)
-					return
-				}
-
-				if ok, _ := b.Connected(); !ok {
-					if err := b.Open(e.client.Config()); err != nil && err != sarama.ErrAlreadyConnected {
-						e.logger.Errorf("Cannot open broker %d: %v", id, err)
-						return
-					}
-				}
-				resp, err := b.GetAvailableOffsets(r)
-				if err != nil {
-					e.logger.Errorf("Cannot get available offsets from broker %d: %v", id, err)
-					return
-				}
-				for t, ps := range resp.Blocks {
-					for p, block := range ps {
-						if block.Err == sarama.ErrNoError {
-							e.mu.Lock()
-							offset[t][p] = block.Offsets[0]
-							e.mu.Unlock()
-						}
-					}
-				}
-			}(bid, req)
-		}
-		refreshWg.Wait()
-
-		// 3. iterate through all the deferred tasks again, and report the metrics using the updated offsetMap
-		for _, task := range deferredTasks {
-			e.reportGroupMetrics(task.group.GroupId, task.blocks, offset, ch)
-		}
-		e.logger.Info("Phase 3 (Refresh negative lag offsets) took %v", time.Since(phase3Start))
-	}
-}
-
-func (e *Exporter) emitGroupMetric(group *sarama.GroupDescription, broker *sarama.Broker, offsetMap map[string]map[int32]int64, topicPartitionLeaders map[string]map[int32]int32, ch chan<- prometheus.Metric) *deferredGroupTask {
-	// build the offset fetch request
-	offsetFetchRequest := sarama.OffsetFetchRequest{ConsumerGroup: group.GroupId, Version: e.fetchOffsetVersion()}
-	if e.offsetShowAll {
-		for topic, partitions := range offsetMap {
-			for partition := range partitions {
-				offsetFetchRequest.AddPartition(topic, partition)
-			}
-		}
-	} else {
-		for _, member := range group.Members {
-			if len(member.MemberAssignment) == 0 {
-				continue
-			}
-			assignment, err := member.GetMemberAssignment()
-			if err != nil {
-				continue
-			}
-			for topic, partitions := range assignment.Topics {
-				for _, partition := range partitions {
-					offsetFetchRequest.AddPartition(topic, partition)
-				}
-			}
-		}
-	}
-
-	ch <- common.Gauge(
-		consumergroupMembers, float64(len(group.Members)), group.GroupId,
-	)
-
-	offsetFetchResponse, err := broker.FetchOffset(&offsetFetchRequest)
-	if err != nil {
-		e.logger.Errorf("Cannot get offset of group %s: %v", group.GroupId, err)
-		return nil
-	}
-
-	hasNegativeLag := false
-	for topic, partitions := range offsetFetchResponse.Blocks {
-		for partition, block := range partitions {
-			e.mu.RLock()
-			cachedOffset := offsetMap[topic][partition]
-			e.mu.RUnlock()
-			if block.Offset != -1 && cachedOffset-block.Offset < 0 {
-				hasNegativeLag = true
-				break
-			}
-		}
-		if hasNegativeLag {
-			break
-		}
-	}
-
-	if hasNegativeLag {
-		// 发现负 Lag，返回任务供后续批量处理
-		return &deferredGroupTask{
-			group:  group,
-			blocks: offsetFetchResponse.Blocks,
-		}
-	}
-
-	// 如果没有负 Lag，执行监控上报逻辑
-	e.reportGroupMetrics(group.GroupId, offsetFetchResponse.Blocks, offsetMap, ch)
-	return nil
-}
-
-// reportGroupMetrics 统一上报消费组指标
-func (e *Exporter) reportGroupMetrics(
-	groupId string,
-	blocks map[string]map[int32]*sarama.OffsetFetchResponseBlock,
-	offsetMap map[string]map[int32]int64, // 各分区的 Topic 最新位点
-	ch chan<- prometheus.Metric,
-) {
-	for topic, partitions := range blocks {
-		var currentOffsetSum int64
-		var lagSum int64
-		topicConsumed := false
-
-		for _, block := range partitions {
-			if block.Offset != -1 {
-				topicConsumed = true
-				break
-			}
-		}
-		if !topicConsumed {
-			continue
-		}
-
-		for partition, block := range partitions {
-			if block.Err != sarama.ErrNoError {
-				e.logger.Errorf("Error for partition %d: %v", partition, block.Err.Error())
-				continue
-			}
-
-			currentOffset := block.Offset
-			if currentOffset != -1 {
-				currentOffsetSum += currentOffset
-			}
-
-			ch <- common.Gauge(
-				consumergroupCurrentOffset, float64(currentOffset),
-				groupId, topic, strconv.FormatInt(int64(partition), 10),
-			)
-
-			var lag int64
-			if block.Offset == -1 {
-				lag = -1
-			} else {
-				e.mu.RLock()
-				cachedOffset, _ := offsetMap[topic][partition]
-				e.mu.RUnlock()
-
-				lag = cachedOffset - block.Offset
-
-				lagSum += lag
-			}
-			ch <- common.Gauge(
-				consumergroupLag, float64(lag),
-				groupId, topic, strconv.FormatInt(int64(partition), 10),
-			)
-		}
-
-		if topicConsumed {
-			ch <- common.Gauge(
-				consumergroupCurrentOffsetSum, float64(currentOffsetSum),
-				groupId, topic,
-			)
-			ch <- common.Gauge(
-				consumergroupLagSum, float64(lagSum),
-				groupId, topic,
-			)
-		}
+		e.logger.Warning(fmt.Errorf("no valid broker, cannot get consumer group metrics"))
 	}
 }
