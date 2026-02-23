@@ -36,7 +36,7 @@ const (
 
 var (
 	clusterBrokers                     = common.Desc("kafka_brokers", "Number of brokers in the Kafka cluster")
-	clusterBrokerInfo                  = common.Desc("kafka_broker_info", "Information about the Kafka broker", "id", "broker_address", "rack", "is_controller")
+	clusterBrokerInfo                  = common.Desc("kafka_broker_info", "Information about the Kafka broker", "id", "broker_address", "rack", "is_controller", "protocol_version")
 	topicPartitions                    = common.Desc("kafka_topic_partitions", "Number of partitions for a topic", "topic")
 	topicCurrentOffset                 = common.Desc("kafka_topic_partition_current_offset", "Current offset of a partition", "topic", "partition")
 	topicOldestOffset                  = common.Desc("kafka_topic_partition_oldest_offset", "Oldest offset of a partition", "topic", "partition")
@@ -519,7 +519,7 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) {
 				} else {
 					return "0"
 				}
-			}(),
+			}(), e.getBrokerProtocolVersion(b.ID()),
 		)
 	}
 
@@ -875,4 +875,27 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) {
 	} else {
 		e.logger.Warning(fmt.Errorf("no valid broker, cannot get consumer group metrics"))
 	}
+}
+
+func (e *Exporter) getBrokerProtocolVersion(brokerID int32) string {
+
+	resource := sarama.ConfigResource{
+		Type: sarama.BrokerResource,
+		Name: fmt.Sprintf("%d", brokerID),
+	}
+
+	configEntries, err := e.adminClient.DescribeConfig(resource)
+	if err != nil {
+		e.logger.Warning(fmt.Errorf("failed to describe config: %w", err))
+		return "UNKNOWN"
+	}
+
+	for _, entry := range configEntries {
+		if entry.Name == "inter.broker.protocol.version" {
+			return entry.Value
+		}
+	}
+
+	e.logger.Warning(fmt.Errorf("inter.broker.protocol.version not found"))
+	return "UNKNOWN"
 }
