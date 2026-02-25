@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/coroot-cluster-agent/flags"
@@ -38,7 +39,14 @@ func NewEventsLogger() *EventsLogger {
 
 func (l *EventsLogger) EmitEvent(event *corev1.Event) {
 	record := log.Record{}
-	record.SetTimestamp(event.LastTimestamp.Time)
+	ts := event.LastTimestamp.Time
+	if ts.IsZero() {
+		ts = event.EventTime.Time
+	}
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	record.SetTimestamp(ts)
 	record.SetSeverityText(event.Type)
 	switch event.Type {
 	case corev1.EventTypeNormal:

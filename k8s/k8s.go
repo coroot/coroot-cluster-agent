@@ -104,7 +104,7 @@ func (k8s *K8S) start() {
 		events.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				event := obj.(*corev1.Event)
-				if event.LastTimestamp.Before(&startTime) {
+				if !event.LastTimestamp.IsZero() && event.LastTimestamp.Before(&startTime) {
 					return
 				}
 				eventsLogger.EmitEvent(event)
