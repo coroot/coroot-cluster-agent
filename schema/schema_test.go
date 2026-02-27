@@ -28,9 +28,8 @@ func TestDiff_TableCreated(t *testing.T) {
 	changes := Diff(prev, curr)
 	require.Len(t, changes, 1)
 	assert.Equal(t, "mydb", changes[0].Database)
-	assert.Equal(t, "public.orders", changes[0].Table)
-	assert.True(t, changes[0].IsCreate)
-	assert.False(t, changes[0].IsDrop)
+	assert.Equal(t, "public.orders", changes[0].Object)
+	assert.Equal(t, ChangeTypeCreated, changes[0].Type)
 	assert.Contains(t, changes[0].Diff, "+CREATE TABLE public.orders")
 }
 
@@ -40,9 +39,8 @@ func TestDiff_TableDropped(t *testing.T) {
 	changes := Diff(prev, curr)
 	require.Len(t, changes, 1)
 	assert.Equal(t, "mydb", changes[0].Database)
-	assert.Equal(t, "public.orders", changes[0].Table)
-	assert.True(t, changes[0].IsDrop)
-	assert.False(t, changes[0].IsCreate)
+	assert.Equal(t, "public.orders", changes[0].Object)
+	assert.Equal(t, ChangeTypeDropped, changes[0].Type)
 	assert.Contains(t, changes[0].Diff, "-CREATE TABLE public.orders")
 }
 
@@ -52,9 +50,8 @@ func TestDiff_TableChanged(t *testing.T) {
 	changes := Diff(prev, curr)
 	require.Len(t, changes, 1)
 	assert.Equal(t, "mydb", changes[0].Database)
-	assert.Equal(t, "public.users", changes[0].Table)
-	assert.False(t, changes[0].IsCreate)
-	assert.False(t, changes[0].IsDrop)
+	assert.Equal(t, "public.users", changes[0].Object)
+	assert.Equal(t, ChangeTypeChanged, changes[0].Type)
 	assert.Contains(t, changes[0].Diff, "-    id integer NOT NULL")
 	assert.Contains(t, changes[0].Diff, "+    id integer NOT NULL,")
 	assert.Contains(t, changes[0].Diff, "+    name text")
@@ -73,15 +70,14 @@ func TestDiff_MultipleChanges(t *testing.T) {
 	require.Len(t, changes, 3)
 
 	// Sorted by key: orders (dropped), products (created), users (changed)
-	assert.Equal(t, "public.orders", changes[0].Table)
-	assert.True(t, changes[0].IsDrop)
+	assert.Equal(t, "public.orders", changes[0].Object)
+	assert.Equal(t, ChangeTypeDropped, changes[0].Type)
 
-	assert.Equal(t, "public.products", changes[1].Table)
-	assert.True(t, changes[1].IsCreate)
+	assert.Equal(t, "public.products", changes[1].Object)
+	assert.Equal(t, ChangeTypeCreated, changes[1].Type)
 
-	assert.Equal(t, "public.users", changes[2].Table)
-	assert.False(t, changes[2].IsCreate)
-	assert.False(t, changes[2].IsDrop)
+	assert.Equal(t, "public.users", changes[2].Object)
+	assert.Equal(t, ChangeTypeChanged, changes[2].Type)
 }
 
 func TestDiff_DiffFormat(t *testing.T) {

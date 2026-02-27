@@ -86,15 +86,16 @@ type Collector struct {
 	replicationStatus *replicationStatus
 	scrapeErrors      map[string]bool
 
-	schemaTracker *schemaTracker
-	schemaEmitter schemaChangeEmitter
-	targetAddr    string
+	schemaTracker    *schemaTracker
+	emitter          changeEmitter
+	targetAddr       string
+	prevSettingsText string
 
 	lock   sync.RWMutex
 	logger logger.Logger
 }
 
-func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, schemaEmitter schemaChangeEmitter, targetAddr string) (*Collector, error) {
+func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter changeEmitter, targetAddr string) (*Collector, error) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
 		ctx:            ctx,
@@ -104,6 +105,7 @@ func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger
 		scrapeInterval: scrapeInterval,
 		collectTimeout: collectTimeout,
 		targetAddr:     targetAddr,
+		emitter:        emitter,
 	}
 	var err error
 	c.db, err = sql.Open("postgres", dsn)
@@ -111,8 +113,7 @@ func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger
 		return nil, err
 	}
 	c.db.SetMaxOpenConns(1)
-	if schemaEmitter != nil {
-		c.schemaEmitter = schemaEmitter
+	if c.emitter != nil {
 		c.schemaTracker = newSchemaTracker(dsn, logger)
 	}
 	pingCtx, pingCancelFunc := context.WithTimeout(ctx, collectTimeout)
@@ -212,8 +213,9 @@ func (c *Collector) snapshot() {
 		return
 	}
 
-	if c.schemaTracker != nil {
-		c.schemaTracker.Track(ctx, c.db, c.schemaEmitter, c.targetAddr)
+	if c.emitter != nil {
+		c.trackSettingsChanges()
+		c.schemaTracker.Track(ctx, c.db, c.emitter, c.targetAddr)
 	}
 }
 
@@ -361,7 +363,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.connectionMetrics(ch)
 	c.queryMetrics(ch)
 	for _, s := range c.settings {
-		ch <- gauge(dSettings, s.Value, s.Name, s.Unit)
+		if s.IsMetric {
+			ch <- gauge(dSettings, s.Value, s.Name, s.Unit)
+		}
 	}
 
 	if c.replicationStatus != nil {

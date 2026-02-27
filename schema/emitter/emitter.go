@@ -31,7 +31,7 @@ func NewChangeEmitter() *ChangeEmitter {
 	provider := sdk.NewLoggerProvider(
 		sdk.WithProcessor(batcher),
 		sdk.WithResource(resource.NewWithAttributes(semconv.SchemaURL,
-			semconv.ServiceName("DatabaseSchemaChanges"),
+			semconv.ServiceName("DatabaseChanges"),
 		)),
 	)
 	return &ChangeEmitter{logger: provider.Logger("coroot-cluster-agent")}
@@ -42,21 +42,13 @@ func (e *ChangeEmitter) Emit(change schema.Change, dbSystem, targetAddr string) 
 	record.SetTimestamp(time.Now())
 	record.SetSeverity(log.SeverityInfo)
 	record.SetSeverityText("Info")
-
-	changeType := "changed"
-	if change.IsCreate {
-		changeType = "created"
-	} else if change.IsDrop {
-		changeType = "dropped"
-	}
-
 	record.SetBody(log.StringValue(change.Diff))
 	record.AddAttributes(
 		log.String("db.system", dbSystem),
 		log.String("db.target", targetAddr),
 		log.String("db.name", change.Database),
-		log.String("schema_change.table", change.Table),
-		log.String("schema_change.type", changeType),
+		log.String("db_change.object", change.Object),
+		log.String("db_change.type", change.Type),
 	)
 	e.logger.Emit(context.TODO(), record)
 }

@@ -67,6 +67,20 @@ CREATE INDEX idx_users_name ON public.users USING btree (name);
 	assert.Equal(t, expected, got)
 }
 
+func Test_settingsToText(t *testing.T) {
+	settings := []Setting{
+		{Name: "max_connections", RawValue: "100", Source: "configuration file", IsMetric: true},
+		{Name: "shared_buffers", RawValue: "16384", Source: "configuration file", IsMetric: true},
+		{Name: "timezone", RawValue: "UTC", Source: "default"},
+		{Name: "log_min_duration_statement", RawValue: "1000", Source: "command line", IsMetric: true},
+		{Name: "transaction_read_only", RawValue: "off", Source: "override"},
+		{Name: "work_mem", RawValue: "8192", Source: "configuration file", IsMetric: true},
+	}
+	got := settingsToText(settings)
+	expected := "max_connections = 100\nshared_buffers = 16384\ntimezone = UTC\nlog_min_duration_statement = 1000\nwork_mem = 8192\n"
+	assert.Equal(t, expected, got)
+}
+
 func Test_buildDDL_NoConstraintsNoIndexes(t *testing.T) {
 	cols := []columnInfo{
 		{Name: "id", DataType: "integer", Nullable: false},

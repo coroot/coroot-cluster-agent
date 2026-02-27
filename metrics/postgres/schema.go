@@ -14,7 +14,7 @@ import (
 
 const schemaTrackMinInterval = 60 * time.Second
 
-type schemaChangeEmitter interface {
+type changeEmitter interface {
 	Emit(change schema.Change, dbSystem, targetAddr string)
 }
 
@@ -32,7 +32,7 @@ func newSchemaTracker(baseDSN string, logger logger.Logger) *schemaTracker {
 	}
 }
 
-func (st *schemaTracker) Track(ctx context.Context, mainDB *sql.DB, emitter schemaChangeEmitter, targetAddr string) {
+func (st *schemaTracker) Track(ctx context.Context, mainDB *sql.DB, emitter changeEmitter, targetAddr string) {
 	if time.Since(st.lastTracked) < schemaTrackMinInterval {
 		return
 	}

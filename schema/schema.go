@@ -8,17 +8,24 @@ import (
 	"golang.org/x/exp/maps"
 )
 
-// Snapshot maps "database/schema.table" -> DDL text.
+// Snapshot maps "database/schema.table" (or any key) -> text content.
 type Snapshot map[string]string
+
+const (
+	ChangeTypeCreated = "created"
+	ChangeTypeDropped = "dropped"
+	ChangeTypeChanged = "changed"
+)
 
 type Change struct {
 	Database string
-	Table    string // "schema.table"
+	Object   string // "schema.table", "pg_settings", etc.
+	Type     string // ChangeTypeCreated, ChangeTypeDropped, ChangeTypeChanged
 	Diff     string
-	IsCreate bool
-	IsDrop   bool
 }
 
+// Diff compares prev and curr snapshots and returns detected changes.
+// Returns nil if prev is nil (first run).
 func Diff(prev, curr Snapshot) []Change {
 	if prev == nil {
 		return nil
@@ -36,37 +43,38 @@ func Diff(prev, curr Snapshot) []Change {
 	sort.Strings(sorted)
 
 	for _, key := range sorted {
-		db, table := splitKey(key)
-		oldDDL, inPrev := prev[key]
-		newDDL, inCurr := curr[key]
+		db, object := splitKey(key)
+		oldText, inPrev := prev[key]
+		newText, inCurr := curr[key]
 
 		switch {
 		case !inPrev && inCurr:
 			changes = append(changes, Change{
 				Database: db,
-				Table:    table,
-				Diff:     unifiedDiff(key, "", newDDL),
-				IsCreate: true,
+				Object:   object,
+				Type:     ChangeTypeCreated,
+				Diff:     unifiedDiff(key, "", newText),
 			})
 		case inPrev && !inCurr:
 			changes = append(changes, Change{
 				Database: db,
-				Table:    table,
-				Diff:     unifiedDiff(key, oldDDL, ""),
-				IsDrop:   true,
+				Object:   object,
+				Type:     ChangeTypeDropped,
+				Diff:     unifiedDiff(key, oldText, ""),
 			})
-		case oldDDL != newDDL:
+		case oldText != newText:
 			changes = append(changes, Change{
 				Database: db,
-				Table:    table,
-				Diff:     unifiedDiff(key, oldDDL, newDDL),
+				Object:   object,
+				Type:     ChangeTypeChanged,
+				Diff:     unifiedDiff(key, oldText, newText),
 			})
 		}
 	}
 	return changes
 }
 
-func splitKey(key string) (database, table string) {
+func splitKey(key string) (database, object string) {
 	i := strings.IndexByte(key, '/')
 	if i < 0 {
 		return "", key

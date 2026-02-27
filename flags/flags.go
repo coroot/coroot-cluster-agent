@@ -26,7 +26,7 @@ var (
 
 	CollectKubernetesEvents = kingpin.Flag("collect-kubernetes-events", "").Envar("COLLECT_KUBERNETES_EVENTS").Default("true").Bool()
 
-	TrackDatabaseSchemaChanges = kingpin.Flag("track-database-schema-changes", "").Envar("TRACK_DATABASE_SCHEMA_CHANGES").Default("true").Bool()
+	TrackDatabaseChanges = kingpin.Flag("track-database-changes", "").Envar("TRACK_DATABASE_CHANGES").Default("true").Bool()
 )
 
 func init() {
