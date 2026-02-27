@@ -11,6 +11,7 @@ import (
 
 	"github.com/coroot/coroot-cluster-agent/config"
 	"github.com/coroot/coroot-cluster-agent/k8s"
+	kafka "github.com/coroot/coroot-cluster-agent/metrics/kafka"
 	"github.com/coroot/coroot-cluster-agent/metrics/mongo"
 	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
 	postgres "github.com/coroot/coroot-pg-agent/collector"
@@ -29,6 +30,7 @@ const (
 	TargetTypeRedis     TargetType = "redis"
 	TargetTypeMongodb   TargetType = "mongodb"
 	TargetTypeMemcached TargetType = "memcached"
+	TargetTypeKafka     TargetType = "kafka"
 )
 
 type Credentials struct {
@@ -170,6 +172,16 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		t.coll = collector
 		t.stop = func() {}
 
+	case TargetTypeKafka:
+		opts := kafka.NewKafkaOpts()
+		opts.Uri = []string{t.Addr}
+		collector, err := kafka.NewExporter(opts, t.logger)
+		if err != nil {
+			return err
+		}
+		t.coll = collector
+		t.stop = func() {}
+
 	default:
 		return fmt.Errorf("unsupported target type: %s", t.Type)
 	}
@@ -287,6 +299,16 @@ func TargetFromPod(pod *k8s.Pod) *Target {
 		t = &Target{
 			Type: TargetTypeMemcached,
 			Addr: net.JoinHostPort(pod.IP, cmp.Or(pod.Annotations["coroot.com/memcached-scrape-port"], "11211")),
+		}
+	}
+
+	if pod.Annotations["coroot.com/kafka-scrape"] == "true" && pod.Annotations["coroot.com/kafka-cluster-id"] != "" {
+		t = &Target{
+			Type: TargetTypeKafka,
+			Addr: net.JoinHostPort(pod.IP, cmp.Or(pod.Annotations["coroot.com/kafka-scrape-port"], "9092")),
+			Params: map[string]string{
+				"cluster_id": pod.Annotations["coroot.com/kafka-cluster-id"],
+			},
 		}
 	}
 

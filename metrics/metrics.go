@@ -109,9 +109,17 @@ func (ms *Metrics) HttpHandler() http.Handler {
 }
 
 func (ms *Metrics) addTarget(target *Target) {
-	klog.Infof("new target: %s", target)
 	ms.targetsLock.Lock()
 	defer ms.targetsLock.Unlock()
+	if clusterId := target.Params["cluster_id"]; clusterId != "" {
+		for _, existingTarget := range ms.targets {
+			if existingTarget.Params["cluster_id"] == clusterId {
+				klog.Infof("skipping target %s: cluster_id %s already exists", target, clusterId)
+				return
+			}
+		}
+	}
+	klog.Infof("new target: %s", target)
 	ms.targets[target.Addr] = target
 }
 
