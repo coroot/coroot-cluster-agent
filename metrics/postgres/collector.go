@@ -86,11 +86,15 @@ type Collector struct {
 	replicationStatus *replicationStatus
 	scrapeErrors      map[string]bool
 
+	schemaTracker *schemaTracker
+	schemaEmitter schemaChangeEmitter
+	targetAddr    string
+
 	lock   sync.RWMutex
 	logger logger.Logger
 }
 
-func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger) (*Collector, error) {
+func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, schemaEmitter schemaChangeEmitter, targetAddr string) (*Collector, error) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
 		ctx:            ctx,
@@ -99,6 +103,7 @@ func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger
 		scrapeErrors:   map[string]bool{},
 		scrapeInterval: scrapeInterval,
 		collectTimeout: collectTimeout,
+		targetAddr:     targetAddr,
 	}
 	var err error
 	c.db, err = sql.Open("postgres", dsn)
@@ -106,6 +111,10 @@ func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger
 		return nil, err
 	}
 	c.db.SetMaxOpenConns(1)
+	if schemaEmitter != nil {
+		c.schemaEmitter = schemaEmitter
+		c.schemaTracker = newSchemaTracker(dsn, logger)
+	}
 	pingCtx, pingCancelFunc := context.WithTimeout(ctx, collectTimeout)
 	defer pingCancelFunc()
 	if err := c.db.PingContext(pingCtx); err != nil {
@@ -201,6 +210,10 @@ func (c *Collector) snapshot() {
 		c.logger.Warning(err)
 		c.scrapeErrors[err.Error()] = true
 		return
+	}
+
+	if c.schemaTracker != nil {
+		c.schemaTracker.Track(ctx, c.db, c.schemaEmitter, c.targetAddr)
 	}
 }
 

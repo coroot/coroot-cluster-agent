@@ -25,6 +25,8 @@ var (
 	InsecureSkipVerify = kingpin.Flag("insecure-skip-verify", "whether to skip verifying the certificate or not").Envar("INSECURE_SKIP_VERIFY").Default("false").Bool()
 
 	CollectKubernetesEvents = kingpin.Flag("collect-kubernetes-events", "").Envar("COLLECT_KUBERNETES_EVENTS").Default("true").Bool()
+
+	TrackDatabaseSchemaChanges = kingpin.Flag("track-database-schema-changes", "").Envar("TRACK_DATABASE_SCHEMA_CHANGES").Default("true").Bool()
 )
 
 func init() {

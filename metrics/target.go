@@ -14,6 +14,7 @@ import (
 	"github.com/coroot/coroot-cluster-agent/metrics/mongo"
 	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
 	"github.com/coroot/coroot-cluster-agent/metrics/postgres"
+	"github.com/coroot/coroot-cluster-agent/schema/emitter"
 	"github.com/coroot/logger"
 	"github.com/go-kit/log/level"
 	redis "github.com/oliver006/redis_exporter/exporter"
@@ -90,7 +91,7 @@ func (t *Target) IsExporterStarted() bool {
 	return t.coll != nil
 }
 
-func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, scrapeInterval, scrapeTimeout time.Duration) error {
+func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, scrapeInterval, scrapeTimeout time.Duration, schemaEmitter *emitter.ChangeEmitter) error {
 	collectTimeout := scrapeTimeout - time.Second
 	if collectTimeout <= 0 {
 		collectTimeout = time.Second
@@ -108,7 +109,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		}
 		query.Set("sslmode", sslmode)
 		dsn := fmt.Sprintf("postgresql://%s@%s/postgres?%s", userPass, t.Addr, query.Encode())
-		collector, err := postgres.New(dsn, scrapeInterval, collectTimeout, t.logger)
+		collector, err := postgres.New(dsn, scrapeInterval, collectTimeout, t.logger, schemaEmitter, t.Addr)
 		if err != nil {
 			return err
 		}
