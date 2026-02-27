@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/coroot/coroot-cluster-agent/schema"
 	"github.com/coroot/logger"
 )
@@ -75,6 +76,19 @@ func (st *schemaTracker) collectDatabaseSchema(ctx context.Context, dsn, dbName 
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
+	var tableCount int
+	if err := db.QueryRowContext(ctx, `
+SELECT count(*)
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema')`).Scan(&tableCount); err != nil {
+		return fmt.Errorf("count tables: %w", err)
+	}
+	if tableCount > *flags.MaxTablesPerDatabase {
+		st.logger.Warningf("database %s has %d tables (limit %d), skipping schema tracking", dbName, tableCount, *flags.MaxTablesPerDatabase)
+		return nil
+	}
+
 	columns, err := queryColumns(ctx, db)
 	if err != nil {
 		return fmt.Errorf("query columns: %w", err)
@@ -90,7 +104,6 @@ func (st *schemaTracker) collectDatabaseSchema(ctx context.Context, dsn, dbName 
 		return fmt.Errorf("query indexes: %w", err)
 	}
 
-	// Group by schema.table
 	tables := map[string]bool{}
 	for key := range columns {
 		tables[key] = true

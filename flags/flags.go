@@ -27,6 +27,7 @@ var (
 	CollectKubernetesEvents = kingpin.Flag("collect-kubernetes-events", "").Envar("COLLECT_KUBERNETES_EVENTS").Default("true").Bool()
 
 	TrackDatabaseChanges = kingpin.Flag("track-database-changes", "").Envar("TRACK_DATABASE_CHANGES").Default("true").Bool()
+	MaxTablesPerDatabase = kingpin.Flag("max-tables-per-database", "").Envar("MAX_TABLES_PER_DATABASE").Default("1000").Int()
 )
 
 func init() {
