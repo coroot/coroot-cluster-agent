@@ -13,7 +13,7 @@ import (
 	"github.com/coroot/coroot-cluster-agent/k8s"
 	"github.com/coroot/coroot-cluster-agent/metrics/mongo"
 	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
-	postgres "github.com/coroot/coroot-pg-agent/collector"
+	"github.com/coroot/coroot-cluster-agent/metrics/postgres"
 	"github.com/coroot/logger"
 	"github.com/go-kit/log/level"
 	redis "github.com/oliver006/redis_exporter/exporter"
