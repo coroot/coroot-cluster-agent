@@ -2,7 +2,6 @@ package dbtracker
 
 import (
 	"context"
-	"database/sql"
 	"sort"
 	"time"
 
@@ -40,7 +39,7 @@ type DBSizeSnapshot struct {
 	Tables       []TableSizeEntry
 }
 
-type CollectFunc func(ctx context.Context, db *sql.DB) (schema.Snapshot, map[string]*DBSizeSnapshot, error)
+type CollectFunc func(ctx context.Context) (schema.Snapshot, map[string]*DBSizeSnapshot, error)
 
 type Tracker struct {
 	dbSystem    string
@@ -66,14 +65,14 @@ func NewTracker(dbSystem string, trackSchema, trackSizes bool, collect CollectFu
 	}
 }
 
-func (t *Tracker) Track(ctx context.Context, db *sql.DB, emitter ChangeEmitter, targetAddr string) {
+func (t *Tracker) Track(ctx context.Context, emitter ChangeEmitter, targetAddr string) {
 	if time.Since(t.lastTracked) < TrackMinInterval {
 		return
 	}
 	prevTracked := t.lastTracked
 	t.lastTracked = time.Now()
 
-	curr, dbSizes, err := t.collect(ctx, db)
+	curr, dbSizes, err := t.collect(ctx)
 	if err != nil {
 		t.logger.Warning("database tracking:", err)
 		return

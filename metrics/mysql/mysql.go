@@ -110,7 +110,7 @@ func New(dsn string, logger logger.Logger, scrapeInterval, collectTimeout time.D
 	c.db.SetMaxOpenConns(1)
 	trackSchema := c.emitter != nil
 	if trackSchema || trackSizes {
-		c.dbTracker = newDatabaseTracker(maxTablesPerDB, trackSchema, trackSizes, excludeDatabases, logger)
+		c.dbTracker = newDatabaseTracker(c.db, maxTablesPerDB, trackSchema, trackSizes, excludeDatabases, logger)
 	}
 	pingCtx, pingCancelFunc := context.WithTimeout(ctx, collectTimeout)
 	defer pingCancelFunc()
@@ -226,7 +226,7 @@ func (c *Collector) snapshot() {
 		c.trackSettingsChanges()
 	}
 	if c.dbTracker != nil {
-		c.dbTracker.Track(ctx, c.db, c.emitter, c.targetAddr)
+		c.dbTracker.Track(ctx, c.emitter, c.targetAddr)
 	}
 }
 

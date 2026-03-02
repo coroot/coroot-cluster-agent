@@ -14,6 +14,7 @@ import (
 
 type databaseTracker struct {
 	*dbtracker.Tracker
+	db               *sql.DB
 	baseDSN          string
 	maxTablesPerDB   int
 	trackSchema      bool
@@ -22,12 +23,13 @@ type databaseTracker struct {
 	logger           logger.Logger
 }
 
-func newDatabaseTracker(baseDSN string, maxTablesPerDB int, trackSchema, trackSizes bool, excludeDatabases []string, logger logger.Logger) *databaseTracker {
+func newDatabaseTracker(db *sql.DB, baseDSN string, maxTablesPerDB int, trackSchema, trackSizes bool, excludeDatabases []string, logger logger.Logger) *databaseTracker {
 	exclude := make(map[string]bool, len(excludeDatabases))
-	for _, db := range excludeDatabases {
-		exclude[db] = true
+	for _, dbName := range excludeDatabases {
+		exclude[dbName] = true
 	}
 	dt := &databaseTracker{
+		db:               db,
 		baseDSN:          baseDSN,
 		maxTablesPerDB:   maxTablesPerDB,
 		trackSchema:      trackSchema,
@@ -39,8 +41,8 @@ func newDatabaseTracker(baseDSN string, maxTablesPerDB int, trackSchema, trackSi
 	return dt
 }
 
-func (dt *databaseTracker) collectSnapshot(ctx context.Context, mainDB *sql.DB) (schema.Snapshot, map[string]*dbtracker.DBSizeSnapshot, error) {
-	databases, dbSizes, err := listDatabasesWithSizes(ctx, mainDB, dt.excludeDatabases)
+func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot, map[string]*dbtracker.DBSizeSnapshot, error) {
+	databases, dbSizes, err := listDatabasesWithSizes(ctx, dt.db, dt.excludeDatabases)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list databases: %w", err)
 	}

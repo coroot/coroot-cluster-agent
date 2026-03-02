@@ -156,8 +156,13 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			t.Addr,
 			credentials.Username,
 			credentials.Password,
+			scrapeInterval,
 			collectTimeout,
 			t.logger,
+			changeEmitter,
+			t.Addr,
+			maxTablesPerDB,
+			trackSizes,
 		)
 		t.coll = collector
 		t.stop = func() { _ = collector.Close() }

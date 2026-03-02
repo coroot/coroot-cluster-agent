@@ -13,6 +13,7 @@ import (
 
 type databaseTracker struct {
 	*dbtracker.Tracker
+	db               *sql.DB
 	maxTablesPerDB   int
 	trackSchema      bool
 	trackSizes       bool
@@ -20,12 +21,13 @@ type databaseTracker struct {
 	logger           logger.Logger
 }
 
-func newDatabaseTracker(maxTablesPerDB int, trackSchema, trackSizes bool, excludeDatabases []string, logger logger.Logger) *databaseTracker {
+func newDatabaseTracker(db *sql.DB, maxTablesPerDB int, trackSchema, trackSizes bool, excludeDatabases []string, logger logger.Logger) *databaseTracker {
 	exclude := make(map[string]bool, len(excludeDatabases))
-	for _, db := range excludeDatabases {
-		exclude[db] = true
+	for _, dbName := range excludeDatabases {
+		exclude[dbName] = true
 	}
 	dt := &databaseTracker{
+		db:               db,
 		maxTablesPerDB:   maxTablesPerDB,
 		trackSchema:      trackSchema,
 		trackSizes:       trackSizes,
@@ -36,8 +38,8 @@ func newDatabaseTracker(maxTablesPerDB int, trackSchema, trackSizes bool, exclud
 	return dt
 }
 
-func (dt *databaseTracker) collectSnapshot(ctx context.Context, db *sql.DB) (schema.Snapshot, map[string]*dbtracker.DBSizeSnapshot, error) {
-	tables, err := dt.queryTablesWithSizes(ctx, db)
+func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot, map[string]*dbtracker.DBSizeSnapshot, error) {
+	tables, err := dt.queryTablesWithSizes(ctx, dt.db)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query tables: %w", err)
 	}
@@ -73,15 +75,15 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context, db *sql.DB) (sch
 	snapshot := schema.Snapshot{}
 
 	if dt.trackSchema && len(validDBs) > 0 {
-		columns, err := dt.queryColumns(ctx, db)
+		columns, err := dt.queryColumns(ctx, dt.db)
 		if err != nil {
 			return nil, nil, fmt.Errorf("query columns: %w", err)
 		}
-		indexes, err := dt.queryIndexes(ctx, db)
+		indexes, err := dt.queryIndexes(ctx, dt.db)
 		if err != nil {
 			return nil, nil, fmt.Errorf("query indexes: %w", err)
 		}
-		foreignKeys, err := dt.queryForeignKeys(ctx, db)
+		foreignKeys, err := dt.queryForeignKeys(ctx, dt.db)
 		if err != nil {
 			return nil, nil, fmt.Errorf("query foreign keys: %w", err)
 		}
