@@ -1,0 +1,454 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/coroot/coroot-cluster-agent/schema"
+	"github.com/coroot/logger"
+)
+
+const (
+	schemaTrackMinInterval = 60 * time.Second
+	topTablesN             = 20
+)
+
+type changeEmitter interface {
+	Emit(change schema.Change, dbSystem, targetAddr string)
+}
+
+type tableKey struct {
+	DB     string
+	Schema string
+	Table  string
+}
+
+type tableSizeEntry struct {
+	tableKey
+	Size float64
+}
+
+type tableGrowthEntry struct {
+	tableKey
+	Growth float64
+}
+
+type dbSizeSnapshot struct {
+	DatabaseSize float64
+	Tables       []tableSizeEntry
+}
+
+type databaseTracker struct {
+	baseDSN          string
+	maxTablesPerDB   int
+	trackSchema      bool
+	trackSizes       bool
+	excludeDatabases map[string]bool
+	logger           logger.Logger
+	prev             schema.Snapshot
+	lastTracked      time.Time
+	dbSizes          map[string]*dbSizeSnapshot
+	prevTableSizes   map[tableKey]float64
+	tableGrowth      []tableGrowthEntry
+}
+
+func newDatabaseTracker(baseDSN string, maxTablesPerDB int, trackSchema, trackSizes bool, excludeDatabases []string, logger logger.Logger) *databaseTracker {
+	exclude := make(map[string]bool, len(excludeDatabases))
+	for _, db := range excludeDatabases {
+		exclude[db] = true
+	}
+	return &databaseTracker{
+		baseDSN:          baseDSN,
+		maxTablesPerDB:   maxTablesPerDB,
+		trackSchema:      trackSchema,
+		trackSizes:       trackSizes,
+		excludeDatabases: exclude,
+		logger:           logger,
+	}
+}
+
+func (dt *databaseTracker) Track(ctx context.Context, mainDB *sql.DB, emitter changeEmitter, targetAddr string) {
+	if time.Since(dt.lastTracked) < schemaTrackMinInterval {
+		return
+	}
+	prevTracked := dt.lastTracked
+	dt.lastTracked = time.Now()
+
+	curr, dbSizes, err := dt.collectSnapshot(ctx, mainDB)
+	if err != nil {
+		dt.logger.Warning("database tracking:", err)
+		return
+	}
+	dt.dbSizes = dbSizes
+
+	if dt.trackSizes {
+		dt.computeTableGrowth(dbSizes, dt.lastTracked.Sub(prevTracked))
+		trimTopTables(dbSizes, topTablesN)
+	}
+
+	if dt.trackSchema {
+		for _, c := range schema.Diff(dt.prev, curr) {
+			emitter.Emit(c, "postgresql", targetAddr)
+		}
+		dt.prev = curr
+	}
+}
+
+func (dt *databaseTracker) computeTableGrowth(dbSizes map[string]*dbSizeSnapshot, elapsed time.Duration) {
+	currSizes := map[tableKey]float64{}
+	for _, snap := range dbSizes {
+		for _, t := range snap.Tables {
+			currSizes[t.tableKey] = t.Size
+		}
+	}
+
+	dt.tableGrowth = nil
+	if dt.prevTableSizes != nil && elapsed > 0 {
+		var all []tableGrowthEntry
+		for key, currSize := range currSizes {
+			if prevSize, ok := dt.prevTableSizes[key]; ok {
+				growth := (currSize - prevSize) / elapsed.Seconds()
+				if growth > 0 {
+					all = append(all, tableGrowthEntry{tableKey: key, Growth: growth})
+				}
+			}
+		}
+		sort.Slice(all, func(i, j int) bool { return all[i].Growth > all[j].Growth })
+		if len(all) > topTablesN {
+			all = all[:topTablesN]
+		}
+		dt.tableGrowth = all
+	}
+	dt.prevTableSizes = currSizes
+}
+
+func (dt *databaseTracker) collectSnapshot(ctx context.Context, mainDB *sql.DB) (schema.Snapshot, map[string]*dbSizeSnapshot, error) {
+	databases, dbSizes, err := listDatabasesWithSizes(ctx, mainDB, dt.excludeDatabases)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list databases: %w", err)
+	}
+
+	snapshot := schema.Snapshot{}
+	for _, dbName := range databases {
+		dsn := replaceDatabaseInDSN(dt.baseDSN, dbName)
+		tables, err := dt.collectDatabase(ctx, dsn, dbName, snapshot)
+		if err != nil {
+			dt.logger.Warning("database tracking for", dbName+":", err)
+			continue
+		}
+		if dt.trackSizes {
+			if snap, ok := dbSizes[dbName]; ok {
+				snap.Tables = tables
+			} else {
+				dbSizes[dbName] = &dbSizeSnapshot{Tables: tables}
+			}
+		}
+	}
+	return snapshot, dbSizes, nil
+}
+
+func (dt *databaseTracker) collectDatabase(ctx context.Context, dsn, dbName string, snapshot schema.Snapshot) ([]tableSizeEntry, error) {
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	var tableCount int
+	if err := db.QueryRowContext(ctx, `
+SELECT count(*)
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r'
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema')`).Scan(&tableCount); err != nil {
+		return nil, fmt.Errorf("count tables: %w", err)
+	}
+
+	if dt.maxTablesPerDB > 0 && tableCount > dt.maxTablesPerDB {
+		dt.logger.Warningf("database %s has %d tables (limit %d), skipping", dbName, tableCount, dt.maxTablesPerDB)
+		return nil, nil
+	}
+
+	if dt.trackSchema {
+		columns, err := queryColumns(ctx, db)
+		if err != nil {
+			return nil, fmt.Errorf("query columns: %w", err)
+		}
+
+		constraints, err := queryConstraints(ctx, db)
+		if err != nil {
+			return nil, fmt.Errorf("query constraints: %w", err)
+		}
+
+		indexes, err := queryIndexes(ctx, db)
+		if err != nil {
+			return nil, fmt.Errorf("query indexes: %w", err)
+		}
+
+		tables := map[string]bool{}
+		for key := range columns {
+			tables[key] = true
+		}
+
+		for tableName := range tables {
+			ddl := buildDDL(tableName, columns[tableName], constraints[tableName], indexes[tableName])
+			snapshot[dbName+"/"+tableName] = ddl
+		}
+	}
+
+	if !dt.trackSizes {
+		return nil, nil
+	}
+
+	tableSizes, err := queryTableSizes(ctx, db, dbName)
+	if err != nil {
+		dt.logger.Warning("query table sizes for", dbName+":", err)
+	}
+	return tableSizes, nil
+}
+
+type columnInfo struct {
+	Name     string
+	DataType string
+	Nullable bool
+	Default  sql.NullString
+}
+
+type constraintInfo struct {
+	Name       string
+	Type       string
+	Definition string
+}
+
+type indexInfo struct {
+	Name string
+	DDL  string
+}
+
+func trimTopTables(dbSizes map[string]*dbSizeSnapshot, n int) {
+	var all []tableSizeEntry
+	for _, snap := range dbSizes {
+		all = append(all, snap.Tables...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Size > all[j].Size })
+	if len(all) > n {
+		all = all[:n]
+	}
+	for _, snap := range dbSizes {
+		snap.Tables = nil
+	}
+	for _, t := range all {
+		snap := dbSizes[t.DB]
+		snap.Tables = append(snap.Tables, t)
+	}
+}
+
+func queryTableSizes(ctx context.Context, db *sql.DB, dbName string) ([]tableSizeEntry, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT n.nspname, c.relname, pg_total_relation_size(c.oid)
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r'
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY pg_total_relation_size(c.oid) DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []tableSizeEntry
+	for rows.Next() {
+		e := tableSizeEntry{tableKey: tableKey{DB: dbName}}
+		if err := rows.Scan(&e.Schema, &e.Table, &e.Size); err != nil {
+			return nil, err
+		}
+		result = append(result, e)
+	}
+	return result, rows.Err()
+}
+
+func listDatabasesWithSizes(ctx context.Context, db *sql.DB, exclude map[string]bool) ([]string, map[string]*dbSizeSnapshot, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT datname, pg_database_size(datname) FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var dbs []string
+	sizes := map[string]*dbSizeSnapshot{}
+	for rows.Next() {
+		var name string
+		var size float64
+		if err := rows.Scan(&name, &size); err != nil {
+			return nil, nil, err
+		}
+		if exclude[name] {
+			continue
+		}
+		sizes[name] = &dbSizeSnapshot{DatabaseSize: size}
+		dbs = append(dbs, name)
+	}
+	return dbs, sizes, rows.Err()
+}
+
+func queryColumns(ctx context.Context, db *sql.DB) (map[string][]columnInfo, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT
+    n.nspname, c.relname, a.attname,
+    pg_catalog.format_type(a.atttypid, a.atttypmod),
+    NOT a.attnotnull,
+    pg_get_expr(d.adbin, d.adrelid)
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+WHERE c.relkind = 'r'
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY n.nspname, c.relname, a.attnum`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := map[string][]columnInfo{}
+	for rows.Next() {
+		var schemaName, tableName string
+		var col columnInfo
+		if err := rows.Scan(&schemaName, &tableName, &col.Name, &col.DataType, &col.Nullable, &col.Default); err != nil {
+			return nil, err
+		}
+		key := schemaName + "." + tableName
+		result[key] = append(result[key], col)
+	}
+	return result, rows.Err()
+}
+
+func queryConstraints(ctx context.Context, db *sql.DB) (map[string][]constraintInfo, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT
+    n.nspname, c.relname, con.conname, con.contype,
+    pg_get_constraintdef(con.oid)
+FROM pg_constraint con
+JOIN pg_class c ON c.oid = con.conrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY n.nspname, c.relname, con.contype, con.conname`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := map[string][]constraintInfo{}
+	for rows.Next() {
+		var schemaName, tableName string
+		var con constraintInfo
+		if err := rows.Scan(&schemaName, &tableName, &con.Name, &con.Type, &con.Definition); err != nil {
+			return nil, err
+		}
+		key := schemaName + "." + tableName
+		result[key] = append(result[key], con)
+	}
+	return result, rows.Err()
+}
+
+func queryIndexes(ctx context.Context, db *sql.DB) (map[string][]indexInfo, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT
+    schemaname, tablename, indexname, indexdef
+FROM pg_indexes
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY schemaname, tablename, indexname`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Collect PK index names to skip (they're covered by constraints).
+	result := map[string][]indexInfo{}
+	for rows.Next() {
+		var schemaName, tableName, idxName, idxDef string
+		if err := rows.Scan(&schemaName, &tableName, &idxName, &idxDef); err != nil {
+			return nil, err
+		}
+		key := schemaName + "." + tableName
+		result[key] = append(result[key], indexInfo{Name: idxName, DDL: idxDef})
+	}
+	return result, rows.Err()
+}
+
+func buildDDL(tableName string, cols []columnInfo, cons []constraintInfo, idxs []indexInfo) string {
+	var buf strings.Builder
+	buf.WriteString("CREATE TABLE ")
+	buf.WriteString(tableName)
+	buf.WriteString(" (\n")
+
+	// Columns
+	for i, col := range cols {
+		buf.WriteString("    ")
+		buf.WriteString(col.Name)
+		buf.WriteString(" ")
+		buf.WriteString(col.DataType)
+		if !col.Nullable {
+			buf.WriteString(" NOT NULL")
+		}
+		if col.Default.Valid {
+			buf.WriteString(" DEFAULT ")
+			buf.WriteString(col.Default.String)
+		}
+		if i < len(cols)-1 || len(cons) > 0 {
+			buf.WriteString(",")
+		}
+		buf.WriteString("\n")
+	}
+
+	// Constraints
+	// Build a set of constraint-backing index names to exclude from standalone index output.
+	pkIndexes := map[string]bool{}
+	uqIndexes := map[string]bool{}
+	for _, con := range cons {
+		if con.Type == "p" {
+			pkIndexes[con.Name] = true
+		} else if con.Type == "u" {
+			uqIndexes[con.Name] = true
+		}
+	}
+
+	for i, con := range cons {
+		buf.WriteString("    CONSTRAINT ")
+		buf.WriteString(con.Name)
+		buf.WriteString(" ")
+		buf.WriteString(con.Definition)
+		if i < len(cons)-1 {
+			buf.WriteString(",")
+		}
+		buf.WriteString("\n")
+	}
+
+	buf.WriteString(");\n")
+
+	// Indexes (excluding those backing PRIMARY KEY and UNIQUE constraints)
+	for _, idx := range idxs {
+		if pkIndexes[idx.Name] || uqIndexes[idx.Name] {
+			continue
+		}
+		buf.WriteString("\n")
+		buf.WriteString(idx.DDL)
+		buf.WriteString(";\n")
+	}
+
+	return buf.String()
+}
+
+func replaceDatabaseInDSN(dsn, dbName string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return dsn
+	}
+	u.Path = "/" + dbName
+	return u.String()
+}

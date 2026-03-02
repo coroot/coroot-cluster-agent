@@ -43,6 +43,10 @@ var (
 	dWalCurrentLsn     = desc("pg_wal_current_lsn", "Current WAL sequence number")
 	dWalReceiveLsn     = desc("pg_wal_receive_lsn", "WAL sequence number that has been received and synced to disk by streaming replication")
 	dWalReplyLsn       = desc("pg_wal_reply_lsn", "WAL sequence number that has been replayed during recovery")
+
+	dDbSize          = desc("pg_database_size_bytes", "Total size of the database in bytes", "db")
+	dTableSize       = desc("pg_table_size_bytes", "Total size of the table in bytes including indexes and TOAST", "db", "schema", "table")
+	dTableSizeGrowth = desc("pg_table_size_growth_bytes_per_second", "Table size growth rate in bytes per second", "db", "schema", "table")
 )
 
 type QueryKey struct {
@@ -86,7 +90,7 @@ type Collector struct {
 	replicationStatus *replicationStatus
 	scrapeErrors      map[string]bool
 
-	schemaTracker    *schemaTracker
+	dbTracker        *databaseTracker
 	emitter          changeEmitter
 	targetAddr       string
 	prevSettingsText string
@@ -95,7 +99,7 @@ type Collector struct {
 	logger logger.Logger
 }
 
-func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter changeEmitter, targetAddr string, maxTablesPerDB int) (*Collector, error) {
+func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter changeEmitter, targetAddr string, maxTablesPerDB int, trackSizes bool, excludeDatabases []string) (*Collector, error) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
 		ctx:            ctx,
@@ -113,8 +117,9 @@ func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger
 		return nil, err
 	}
 	c.db.SetMaxOpenConns(1)
-	if c.emitter != nil {
-		c.schemaTracker = newSchemaTracker(dsn, maxTablesPerDB, logger)
+	trackSchema := c.emitter != nil
+	if trackSchema || trackSizes {
+		c.dbTracker = newDatabaseTracker(dsn, maxTablesPerDB, trackSchema, trackSizes, excludeDatabases, logger)
 	}
 	pingCtx, pingCancelFunc := context.WithTimeout(ctx, collectTimeout)
 	defer pingCancelFunc()
@@ -215,7 +220,9 @@ func (c *Collector) snapshot() {
 
 	if c.emitter != nil {
 		c.trackSettingsChanges()
-		c.schemaTracker.Track(ctx, c.db, c.emitter, c.targetAddr)
+	}
+	if c.dbTracker != nil {
+		c.dbTracker.Track(ctx, c.db, c.emitter, c.targetAddr)
 	}
 }
 
@@ -328,6 +335,21 @@ func (c *Collector) queryMetrics(ch chan<- prometheus.Metric) {
 	}
 }
 
+func (c *Collector) tableSizeMetrics(ch chan<- prometheus.Metric) {
+	if c.dbTracker == nil || !c.dbTracker.trackSizes {
+		return
+	}
+	for dbName, snap := range c.dbTracker.dbSizes {
+		ch <- gauge(dDbSize, snap.DatabaseSize, dbName)
+		for _, t := range snap.Tables {
+			ch <- gauge(dTableSize, t.Size, dbName, t.Schema, t.Table)
+		}
+	}
+	for _, g := range c.dbTracker.tableGrowth {
+		ch <- gauge(dTableSizeGrowth, g.Growth, g.DB, g.Schema, g.Table)
+	}
+}
+
 func (c *Collector) Close() error {
 	c.ctxCancelFunc()
 	return c.db.Close()
@@ -362,6 +384,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 	c.connectionMetrics(ch)
 	c.queryMetrics(ch)
+	c.tableSizeMetrics(ch)
 	for _, s := range c.settings {
 		if s.IsMetric {
 			ch <- gauge(dSettings, s.Value, s.Name, s.Unit)
@@ -413,6 +436,9 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dWalCurrentLsn
 	ch <- dWalReceiveLsn
 	ch <- dWalReplyLsn
+	ch <- dDbSize
+	ch <- dTableSize
+	ch <- dTableSizeGrowth
 }
 
 func desc(name, help string, labels ...string) *prometheus.Desc {

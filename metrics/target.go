@@ -91,7 +91,7 @@ func (t *Target) IsExporterStarted() bool {
 	return t.coll != nil
 }
 
-func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, scrapeInterval, scrapeTimeout time.Duration, changeEmitter *emitter.ChangeEmitter, maxTablesPerDB int) error {
+func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, scrapeInterval, scrapeTimeout time.Duration, changeEmitter *emitter.ChangeEmitter, maxTablesPerDB int, trackSizes bool, excludeDatabases []string) error {
 	collectTimeout := scrapeTimeout - time.Second
 	if collectTimeout <= 0 {
 		collectTimeout = time.Second
@@ -109,7 +109,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		}
 		query.Set("sslmode", sslmode)
 		dsn := fmt.Sprintf("postgresql://%s@%s/postgres?%s", userPass, t.Addr, query.Encode())
-		collector, err := postgres.New(dsn, scrapeInterval, collectTimeout, t.logger, changeEmitter, t.Addr, maxTablesPerDB)
+		collector, err := postgres.New(dsn, scrapeInterval, collectTimeout, t.logger, changeEmitter, t.Addr, maxTablesPerDB, trackSizes, excludeDatabases)
 		if err != nil {
 			return err
 		}
