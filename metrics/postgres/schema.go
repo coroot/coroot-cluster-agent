@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/coroot/coroot-cluster-agent/schema"
 	"github.com/coroot/logger"
 )
@@ -20,16 +19,18 @@ type changeEmitter interface {
 }
 
 type schemaTracker struct {
-	baseDSN     string
-	logger      logger.Logger
-	prev        schema.Snapshot
-	lastTracked time.Time
+	baseDSN        string
+	maxTablesPerDB int
+	logger         logger.Logger
+	prev           schema.Snapshot
+	lastTracked    time.Time
 }
 
-func newSchemaTracker(baseDSN string, logger logger.Logger) *schemaTracker {
+func newSchemaTracker(baseDSN string, maxTablesPerDB int, logger logger.Logger) *schemaTracker {
 	return &schemaTracker{
-		baseDSN: baseDSN,
-		logger:  logger,
+		baseDSN:        baseDSN,
+		maxTablesPerDB: maxTablesPerDB,
+		logger:         logger,
 	}
 }
 
@@ -45,8 +46,7 @@ func (st *schemaTracker) Track(ctx context.Context, mainDB *sql.DB, emitter chan
 		return
 	}
 
-	changes := schema.Diff(st.prev, curr)
-	for _, c := range changes {
+	for _, c := range schema.Diff(st.prev, curr) {
 		emitter.Emit(c, "postgresql", targetAddr)
 	}
 	st.prev = curr
@@ -81,11 +81,12 @@ func (st *schemaTracker) collectDatabaseSchema(ctx context.Context, dsn, dbName 
 SELECT count(*)
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema')`).Scan(&tableCount); err != nil {
+WHERE c.relkind = 'r'
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema')`).Scan(&tableCount); err != nil {
 		return fmt.Errorf("count tables: %w", err)
 	}
-	if tableCount > *flags.MaxTablesPerDatabase {
-		st.logger.Warningf("database %s has %d tables (limit %d), skipping schema tracking", dbName, tableCount, *flags.MaxTablesPerDatabase)
+	if st.maxTablesPerDB > 0 && tableCount > st.maxTablesPerDB {
+		st.logger.Warningf("database %s has %d tables (limit %d), skipping schema tracking", dbName, tableCount, st.maxTablesPerDB)
 		return nil
 	}
 

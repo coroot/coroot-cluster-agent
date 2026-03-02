@@ -208,7 +208,7 @@ func (ms *Metrics) startExporters() {
 					}
 				}
 			}
-			if err := t.StartExporter(ms.reg, credentials, ms.scrapeInterval, ms.scrapeTimeout, ms.changeEmitter); err != nil {
+			if err := t.StartExporter(ms.reg, credentials, ms.scrapeInterval, ms.scrapeTimeout, ms.changeEmitter, *flags.MaxTablesPerDatabase); err != nil {
 				t.logger.Errorf("failed to start exporter: %s", err)
 				continue
 			}

@@ -95,7 +95,7 @@ type Collector struct {
 	logger logger.Logger
 }
 
-func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter changeEmitter, targetAddr string) (*Collector, error) {
+func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter changeEmitter, targetAddr string, maxTablesPerDB int) (*Collector, error) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
 		ctx:            ctx,
@@ -114,7 +114,7 @@ func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger
 	}
 	c.db.SetMaxOpenConns(1)
 	if c.emitter != nil {
-		c.schemaTracker = newSchemaTracker(dsn, logger)
+		c.schemaTracker = newSchemaTracker(dsn, maxTablesPerDB, logger)
 	}
 	pingCtx, pingCancelFunc := context.WithTimeout(ctx, collectTimeout)
 	defer pingCancelFunc()

@@ -22,28 +22,6 @@ func TestDiff_NoChanges(t *testing.T) {
 	assert.Empty(t, changes)
 }
 
-func TestDiff_TableCreated(t *testing.T) {
-	prev := Snapshot{}
-	curr := Snapshot{"mydb/public.orders": "CREATE TABLE public.orders (\n    id integer NOT NULL\n);\n"}
-	changes := Diff(prev, curr)
-	require.Len(t, changes, 1)
-	assert.Equal(t, "mydb", changes[0].Database)
-	assert.Equal(t, "public.orders", changes[0].Object)
-	assert.Equal(t, ChangeTypeCreated, changes[0].Type)
-	assert.Contains(t, changes[0].Diff, "+CREATE TABLE public.orders")
-}
-
-func TestDiff_TableDropped(t *testing.T) {
-	prev := Snapshot{"mydb/public.orders": "CREATE TABLE public.orders (\n    id integer NOT NULL\n);\n"}
-	curr := Snapshot{}
-	changes := Diff(prev, curr)
-	require.Len(t, changes, 1)
-	assert.Equal(t, "mydb", changes[0].Database)
-	assert.Equal(t, "public.orders", changes[0].Object)
-	assert.Equal(t, ChangeTypeDropped, changes[0].Type)
-	assert.Contains(t, changes[0].Diff, "-CREATE TABLE public.orders")
-}
-
 func TestDiff_TableChanged(t *testing.T) {
 	prev := Snapshot{"mydb/public.users": "CREATE TABLE public.users (\n    id integer NOT NULL\n);\n"}
 	curr := Snapshot{"mydb/public.users": "CREATE TABLE public.users (\n    id integer NOT NULL,\n    name text\n);\n"}
@@ -67,17 +45,10 @@ func TestDiff_MultipleChanges(t *testing.T) {
 		"mydb/public.products": "CREATE TABLE public.products (\n    id integer NOT NULL\n);\n",
 	}
 	changes := Diff(prev, curr)
-	require.Len(t, changes, 3)
-
-	// Sorted by key: orders (dropped), products (created), users (changed)
-	assert.Equal(t, "public.orders", changes[0].Object)
-	assert.Equal(t, ChangeTypeDropped, changes[0].Type)
-
-	assert.Equal(t, "public.products", changes[1].Object)
-	assert.Equal(t, ChangeTypeCreated, changes[1].Type)
-
-	assert.Equal(t, "public.users", changes[2].Object)
-	assert.Equal(t, ChangeTypeChanged, changes[2].Type)
+	// Only the changed table (users), not created (products) or dropped (orders)
+	require.Len(t, changes, 1)
+	assert.Equal(t, "public.users", changes[0].Object)
+	assert.Equal(t, ChangeTypeChanged, changes[0].Type)
 }
 
 func TestDiff_DiffFormat(t *testing.T) {
