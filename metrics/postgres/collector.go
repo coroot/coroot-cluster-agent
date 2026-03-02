@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/blang/semver"
+	"github.com/coroot/coroot-cluster-agent/metrics/dbtracker"
 	"github.com/coroot/logger"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
@@ -91,7 +92,7 @@ type Collector struct {
 	scrapeErrors      map[string]bool
 
 	dbTracker        *databaseTracker
-	emitter          changeEmitter
+	emitter          dbtracker.ChangeEmitter
 	targetAddr       string
 	prevSettingsText string
 
@@ -99,7 +100,7 @@ type Collector struct {
 	logger logger.Logger
 }
 
-func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter changeEmitter, targetAddr string, maxTablesPerDB int, trackSizes bool, excludeDatabases []string) (*Collector, error) {
+func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter dbtracker.ChangeEmitter, targetAddr string, maxTablesPerDB int, trackSizes bool, excludeDatabases []string) (*Collector, error) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
 		ctx:            ctx,
@@ -339,13 +340,13 @@ func (c *Collector) tableSizeMetrics(ch chan<- prometheus.Metric) {
 	if c.dbTracker == nil || !c.dbTracker.trackSizes {
 		return
 	}
-	for dbName, snap := range c.dbTracker.dbSizes {
+	for dbName, snap := range c.dbTracker.DBSizes {
 		ch <- gauge(dDbSize, snap.DatabaseSize, dbName)
 		for _, t := range snap.Tables {
 			ch <- gauge(dTableSize, t.Size, dbName, t.Schema, t.Table)
 		}
 	}
-	for _, g := range c.dbTracker.tableGrowth {
+	for _, g := range c.dbTracker.TableGrowth {
 		ch <- gauge(dTableSizeGrowth, g.Growth, g.DB, g.Schema, g.Table)
 	}
 }

@@ -5,56 +5,21 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
-	"sort"
 	"strings"
-	"time"
 
+	"github.com/coroot/coroot-cluster-agent/metrics/dbtracker"
 	"github.com/coroot/coroot-cluster-agent/schema"
 	"github.com/coroot/logger"
 )
 
-const (
-	schemaTrackMinInterval = 60 * time.Second
-	topTablesN             = 20
-)
-
-type changeEmitter interface {
-	Emit(change schema.Change, dbSystem, targetAddr string)
-}
-
-type tableKey struct {
-	DB     string
-	Schema string
-	Table  string
-}
-
-type tableSizeEntry struct {
-	tableKey
-	Size float64
-}
-
-type tableGrowthEntry struct {
-	tableKey
-	Growth float64
-}
-
-type dbSizeSnapshot struct {
-	DatabaseSize float64
-	Tables       []tableSizeEntry
-}
-
 type databaseTracker struct {
+	*dbtracker.Tracker
 	baseDSN          string
 	maxTablesPerDB   int
 	trackSchema      bool
 	trackSizes       bool
 	excludeDatabases map[string]bool
 	logger           logger.Logger
-	prev             schema.Snapshot
-	lastTracked      time.Time
-	dbSizes          map[string]*dbSizeSnapshot
-	prevTableSizes   map[tableKey]float64
-	tableGrowth      []tableGrowthEntry
 }
 
 func newDatabaseTracker(baseDSN string, maxTablesPerDB int, trackSchema, trackSizes bool, excludeDatabases []string, logger logger.Logger) *databaseTracker {
@@ -62,7 +27,7 @@ func newDatabaseTracker(baseDSN string, maxTablesPerDB int, trackSchema, trackSi
 	for _, db := range excludeDatabases {
 		exclude[db] = true
 	}
-	return &databaseTracker{
+	dt := &databaseTracker{
 		baseDSN:          baseDSN,
 		maxTablesPerDB:   maxTablesPerDB,
 		trackSchema:      trackSchema,
@@ -70,64 +35,11 @@ func newDatabaseTracker(baseDSN string, maxTablesPerDB int, trackSchema, trackSi
 		excludeDatabases: exclude,
 		logger:           logger,
 	}
+	dt.Tracker = dbtracker.NewTracker("postgresql", trackSchema, trackSizes, dt.collectSnapshot, logger)
+	return dt
 }
 
-func (dt *databaseTracker) Track(ctx context.Context, mainDB *sql.DB, emitter changeEmitter, targetAddr string) {
-	if time.Since(dt.lastTracked) < schemaTrackMinInterval {
-		return
-	}
-	prevTracked := dt.lastTracked
-	dt.lastTracked = time.Now()
-
-	curr, dbSizes, err := dt.collectSnapshot(ctx, mainDB)
-	if err != nil {
-		dt.logger.Warning("database tracking:", err)
-		return
-	}
-	dt.dbSizes = dbSizes
-
-	if dt.trackSizes {
-		dt.computeTableGrowth(dbSizes, dt.lastTracked.Sub(prevTracked))
-		trimTopTables(dbSizes, topTablesN)
-	}
-
-	if dt.trackSchema {
-		for _, c := range schema.Diff(dt.prev, curr) {
-			emitter.Emit(c, "postgresql", targetAddr)
-		}
-		dt.prev = curr
-	}
-}
-
-func (dt *databaseTracker) computeTableGrowth(dbSizes map[string]*dbSizeSnapshot, elapsed time.Duration) {
-	currSizes := map[tableKey]float64{}
-	for _, snap := range dbSizes {
-		for _, t := range snap.Tables {
-			currSizes[t.tableKey] = t.Size
-		}
-	}
-
-	dt.tableGrowth = nil
-	if dt.prevTableSizes != nil && elapsed > 0 {
-		var all []tableGrowthEntry
-		for key, currSize := range currSizes {
-			if prevSize, ok := dt.prevTableSizes[key]; ok {
-				growth := (currSize - prevSize) / elapsed.Seconds()
-				if growth > 0 {
-					all = append(all, tableGrowthEntry{tableKey: key, Growth: growth})
-				}
-			}
-		}
-		sort.Slice(all, func(i, j int) bool { return all[i].Growth > all[j].Growth })
-		if len(all) > topTablesN {
-			all = all[:topTablesN]
-		}
-		dt.tableGrowth = all
-	}
-	dt.prevTableSizes = currSizes
-}
-
-func (dt *databaseTracker) collectSnapshot(ctx context.Context, mainDB *sql.DB) (schema.Snapshot, map[string]*dbSizeSnapshot, error) {
+func (dt *databaseTracker) collectSnapshot(ctx context.Context, mainDB *sql.DB) (schema.Snapshot, map[string]*dbtracker.DBSizeSnapshot, error) {
 	databases, dbSizes, err := listDatabasesWithSizes(ctx, mainDB, dt.excludeDatabases)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list databases: %w", err)
@@ -145,14 +57,14 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context, mainDB *sql.DB) 
 			if snap, ok := dbSizes[dbName]; ok {
 				snap.Tables = tables
 			} else {
-				dbSizes[dbName] = &dbSizeSnapshot{Tables: tables}
+				dbSizes[dbName] = &dbtracker.DBSizeSnapshot{Tables: tables}
 			}
 		}
 	}
 	return snapshot, dbSizes, nil
 }
 
-func (dt *databaseTracker) collectDatabase(ctx context.Context, dsn, dbName string, snapshot schema.Snapshot) ([]tableSizeEntry, error) {
+func (dt *databaseTracker) collectDatabase(ctx context.Context, dsn, dbName string, snapshot schema.Snapshot) ([]dbtracker.TableSizeEntry, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err
@@ -231,25 +143,7 @@ type indexInfo struct {
 	DDL  string
 }
 
-func trimTopTables(dbSizes map[string]*dbSizeSnapshot, n int) {
-	var all []tableSizeEntry
-	for _, snap := range dbSizes {
-		all = append(all, snap.Tables...)
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].Size > all[j].Size })
-	if len(all) > n {
-		all = all[:n]
-	}
-	for _, snap := range dbSizes {
-		snap.Tables = nil
-	}
-	for _, t := range all {
-		snap := dbSizes[t.DB]
-		snap.Tables = append(snap.Tables, t)
-	}
-}
-
-func queryTableSizes(ctx context.Context, db *sql.DB, dbName string) ([]tableSizeEntry, error) {
+func queryTableSizes(ctx context.Context, db *sql.DB, dbName string) ([]dbtracker.TableSizeEntry, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT n.nspname, c.relname, pg_total_relation_size(c.oid)
 FROM pg_catalog.pg_class c
@@ -261,9 +155,9 @@ ORDER BY pg_total_relation_size(c.oid) DESC`)
 		return nil, err
 	}
 	defer rows.Close()
-	var result []tableSizeEntry
+	var result []dbtracker.TableSizeEntry
 	for rows.Next() {
-		e := tableSizeEntry{tableKey: tableKey{DB: dbName}}
+		e := dbtracker.TableSizeEntry{TableKey: dbtracker.TableKey{DB: dbName}}
 		if err := rows.Scan(&e.Schema, &e.Table, &e.Size); err != nil {
 			return nil, err
 		}
@@ -272,7 +166,7 @@ ORDER BY pg_total_relation_size(c.oid) DESC`)
 	return result, rows.Err()
 }
 
-func listDatabasesWithSizes(ctx context.Context, db *sql.DB, exclude map[string]bool) ([]string, map[string]*dbSizeSnapshot, error) {
+func listDatabasesWithSizes(ctx context.Context, db *sql.DB, exclude map[string]bool) ([]string, map[string]*dbtracker.DBSizeSnapshot, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT datname, pg_database_size(datname) FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname`)
 	if err != nil {
@@ -280,7 +174,7 @@ SELECT datname, pg_database_size(datname) FROM pg_database WHERE NOT datistempla
 	}
 	defer rows.Close()
 	var dbs []string
-	sizes := map[string]*dbSizeSnapshot{}
+	sizes := map[string]*dbtracker.DBSizeSnapshot{}
 	for rows.Next() {
 		var name string
 		var size float64
@@ -290,7 +184,7 @@ SELECT datname, pg_database_size(datname) FROM pg_database WHERE NOT datistempla
 		if exclude[name] {
 			continue
 		}
-		sizes[name] = &dbSizeSnapshot{DatabaseSize: size}
+		sizes[name] = &dbtracker.DBSizeSnapshot{DatabaseSize: size}
 		dbs = append(dbs, name)
 	}
 	return dbs, sizes, rows.Err()

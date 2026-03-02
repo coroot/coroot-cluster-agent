@@ -29,7 +29,7 @@ var (
 	TrackDatabaseChanges = kingpin.Flag("track-database-changes", "Track schema and settings changes in databases").Envar("TRACK_DATABASE_CHANGES").Default("true").Bool()
 	TrackDatabaseSizes   = kingpin.Flag("track-database-sizes", "Collect per-database and per-table size metrics").Envar("TRACK_DATABASE_SIZES").Default("true").Bool()
 	MaxTablesPerDatabase = kingpin.Flag("max-tables-per-database", "Skip databases with more tables than this limit").Envar("MAX_TABLES_PER_DATABASE").Default("1000").Int()
-	ExcludeDatabases     = kingpin.Flag("exclude-databases", "Databases to exclude from schema and size tracking").Envar("EXCLUDE_DATABASES").Default("postgres").Strings()
+	ExcludeDatabases     = kingpin.Flag("exclude-databases", "Databases to exclude from schema and size tracking").Envar("EXCLUDE_DATABASES").Default("postgres", "mysql", "information_schema", "performance_schema", "sys").Strings()
 )
 
 func init() {

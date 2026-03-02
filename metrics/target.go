@@ -126,7 +126,8 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		}
 		query.Set("tls", tls)
 		dsn := fmt.Sprintf("%s@tcp(%s)/mysql?%s", userPass, t.Addr, query.Encode())
-		collector, err := mysql.New(dsn, t.logger, scrapeInterval, collectTimeout)
+		collector, err := mysql.New(dsn, t.logger, scrapeInterval, collectTimeout,
+			changeEmitter, t.Addr, maxTablesPerDB, trackSizes, excludeDatabases)
 		if err != nil {
 			return err
 		}

@@ -10,7 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-type tableKey struct {
+type ioTableKey struct {
 	schema string
 	table  string
 }
@@ -22,11 +22,11 @@ type ioSummary struct {
 
 type ioByTableSnapshot struct {
 	ts   time.Time
-	rows map[tableKey]ioSummary
+	rows map[ioTableKey]ioSummary
 }
 
 func (c *Collector) queryTableIOWaits(ctx context.Context) (*ioByTableSnapshot, error) {
-	snapshot := &ioByTableSnapshot{ts: time.Now(), rows: map[tableKey]ioSummary{}}
+	snapshot := &ioByTableSnapshot{ts: time.Now(), rows: map[ioTableKey]ioSummary{}}
 	q := `
 	SELECT
     	OBJECT_SCHEMA, 
@@ -44,7 +44,7 @@ func (c *Collector) queryTableIOWaits(ctx context.Context) (*ioByTableSnapshot, 
 	defer rows.Close()
 
 	for rows.Next() {
-		var k tableKey
+		var k ioTableKey
 		var r ioSummary
 		if err := rows.Scan(&k.schema, &k.table, &r.readTotalTime, &r.writeTotalTime); err != nil {
 			c.logger.Warning(err)
@@ -62,7 +62,7 @@ type ioStats struct {
 }
 
 type ioStatsWithKey struct {
-	k tableKey
+	k ioTableKey
 	s *ioStats
 }
 
@@ -70,7 +70,7 @@ func (c *Collector) ioMetrics(ch chan<- prometheus.Metric, n int) {
 	if c.ioByTablePrev == nil || c.ioByTableCurr == nil {
 		return
 	}
-	res := map[tableKey]*ioStats{}
+	res := map[ioTableKey]*ioStats{}
 
 	withKeys := make([]ioStatsWithKey, 0, len(res))
 

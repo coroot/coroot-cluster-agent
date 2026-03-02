@@ -3,14 +3,20 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
+	"github.com/coroot/coroot-cluster-agent/metrics/dbtracker"
+	"github.com/coroot/coroot-cluster-agent/schema"
 
 	"github.com/coroot/logger"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/pmezard/go-difflib/difflib"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -43,6 +49,10 @@ var (
 	dSlowQueries = common.Desc("mysql_slow_queries_total", "")
 
 	dIOTime = common.Desc("mysql_top_table_io_wait_time_per_second", "", "schema", "table", "operation")
+
+	dDbSize          = common.Desc("mysql_database_size_bytes", "Total size of the database in bytes", "db")
+	dTableSize       = common.Desc("mysql_table_size_bytes", "Total size of the table in bytes", "db", "table")
+	dTableSizeGrowth = common.Desc("mysql_table_size_growth_bytes_per_second", "Table size growth rate in bytes per second", "db", "table")
 )
 
 type Collector struct {
@@ -67,9 +77,17 @@ type Collector struct {
 	ioByTableCurr   *ioByTableSnapshot
 
 	invalidQueries map[string]bool
+
+	dbTracker        *databaseTracker
+	emitter          dbtracker.ChangeEmitter
+	targetAddr       string
+	prevSettingsText string
 }
 
-func New(dsn string, logger logger.Logger, scrapeInterval, collectTimeout time.Duration) (*Collector, error) {
+func New(dsn string, logger logger.Logger, scrapeInterval, collectTimeout time.Duration,
+	emitter dbtracker.ChangeEmitter, targetAddr string, maxTablesPerDB int,
+	trackSizes bool, excludeDatabases []string) (*Collector, error) {
+
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
 		ctx:            ctx,
@@ -77,6 +95,8 @@ func New(dsn string, logger logger.Logger, scrapeInterval, collectTimeout time.D
 		cancelFunc:     cancelFunc,
 		scrapeInterval: scrapeInterval,
 		collectTimeout: collectTimeout,
+		emitter:        emitter,
+		targetAddr:     targetAddr,
 
 		globalStatus:    map[string]string{},
 		globalVariables: map[string]string{},
@@ -88,6 +108,10 @@ func New(dsn string, logger logger.Logger, scrapeInterval, collectTimeout time.D
 		return nil, err
 	}
 	c.db.SetMaxOpenConns(1)
+	trackSchema := c.emitter != nil
+	if trackSchema || trackSizes {
+		c.dbTracker = newDatabaseTracker(maxTablesPerDB, trackSchema, trackSizes, excludeDatabases, logger)
+	}
 	pingCtx, pingCancelFunc := context.WithTimeout(ctx, collectTimeout)
 	defer pingCancelFunc()
 	if err := c.db.PingContext(pingCtx); err != nil {
@@ -142,6 +166,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.queryMetrics(ch, 20)
 	c.ioMetrics(ch, 20)
 	c.replicationMetrics(ch)
+	c.tableSizeMetrics(ch)
 	metricFromVariable(ch, dConnectionsMax, "max_connections", prometheus.GaugeValue, c.globalVariables)
 	metricFromVariable(ch, dConnectionsCurrent, "Threads_connected", prometheus.GaugeValue, c.globalStatus)
 	metricFromVariable(ch, dConnectionsTotal, "Connections", prometheus.CounterValue, c.globalStatus)
@@ -196,6 +221,13 @@ func (c *Collector) snapshot() {
 		c.scrapeErrors[err.Error()] = true
 		return
 	}
+
+	if c.emitter != nil {
+		c.trackSettingsChanges()
+	}
+	if c.dbTracker != nil {
+		c.dbTracker.Track(ctx, c.db, c.emitter, c.targetAddr)
+	}
 }
 
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
@@ -217,6 +249,52 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dQueries
 	ch <- dSlowQueries
 	ch <- dIOTime
+	ch <- dDbSize
+	ch <- dTableSize
+	ch <- dTableSizeGrowth
+}
+
+func (c *Collector) trackSettingsChanges() {
+	names := make([]string, 0, len(c.globalVariables))
+	for name := range c.globalVariables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var buf strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&buf, "%s = %s\n", name, c.globalVariables[name])
+	}
+	curr := buf.String()
+	if c.prevSettingsText != "" && curr != c.prevSettingsText {
+		diff, _ := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+			A:        difflib.SplitLines(c.prevSettingsText),
+			B:        difflib.SplitLines(curr),
+			FromFile: "global_variables",
+			ToFile:   "global_variables",
+			Context:  3,
+		})
+		c.emitter.Emit(schema.Change{
+			Object: "global_variables",
+			Type:   schema.ChangeTypeChanged,
+			Diff:   diff,
+		}, "mysql", c.targetAddr)
+	}
+	c.prevSettingsText = curr
+}
+
+func (c *Collector) tableSizeMetrics(ch chan<- prometheus.Metric) {
+	if c.dbTracker == nil || !c.dbTracker.trackSizes {
+		return
+	}
+	for dbName, snap := range c.dbTracker.DBSizes {
+		ch <- common.Gauge(dDbSize, snap.DatabaseSize, dbName)
+		for _, t := range snap.Tables {
+			ch <- common.Gauge(dTableSize, t.Size, dbName, t.Table)
+		}
+	}
+	for _, g := range c.dbTracker.TableGrowth {
+		ch <- common.Gauge(dTableSizeGrowth, g.Growth, g.DB, g.Table)
+	}
 }
 
 func metricFromVariable(ch chan<- prometheus.Metric, desc *prometheus.Desc, name string, typ prometheus.ValueType, variables map[string]string) {
