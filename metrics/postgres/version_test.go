@@ -1,9 +1,10 @@
 package postgres
 
 import (
+	"testing"
+
 	"github.com/blang/semver"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func Test_parsePgVersion(t *testing.T) {

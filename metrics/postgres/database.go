@@ -105,14 +105,14 @@ WHERE c.relkind = 'r'
 			return nil, fmt.Errorf("query indexes: %w", err)
 		}
 
-		tables := map[string]bool{}
+		tables := map[schema.TableKey]bool{}
 		for key := range columns {
 			tables[key] = true
 		}
 
-		for tableName := range tables {
-			ddl := buildDDL(tableName, columns[tableName], constraints[tableName], indexes[tableName])
-			snapshot[dbName+"/"+tableName] = ddl
+		for key := range tables {
+			ddl := buildDDL(key.Table, columns[key], constraints[key], indexes[key])
+			snapshot[schema.TableKey{DB: dbName, Schema: key.Schema, Table: key.Table}] = ddl
 		}
 	}
 
@@ -159,7 +159,7 @@ ORDER BY pg_total_relation_size(c.oid) DESC`)
 	defer rows.Close()
 	var result []dbtracker.TableSizeEntry
 	for rows.Next() {
-		e := dbtracker.TableSizeEntry{TableKey: dbtracker.TableKey{DB: dbName}}
+		e := dbtracker.TableSizeEntry{TableKey: schema.TableKey{DB: dbName}}
 		if err := rows.Scan(&e.Schema, &e.Table, &e.Size); err != nil {
 			return nil, err
 		}
@@ -192,7 +192,7 @@ SELECT datname, pg_database_size(datname) FROM pg_database WHERE NOT datistempla
 	return dbs, sizes, rows.Err()
 }
 
-func queryColumns(ctx context.Context, db *sql.DB) (map[string][]columnInfo, error) {
+func queryColumns(ctx context.Context, db *sql.DB) (map[schema.TableKey][]columnInfo, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT
     n.nspname, c.relname, a.attname,
@@ -211,20 +211,19 @@ ORDER BY n.nspname, c.relname, a.attnum`)
 	}
 	defer rows.Close()
 
-	result := map[string][]columnInfo{}
+	result := map[schema.TableKey][]columnInfo{}
 	for rows.Next() {
-		var schemaName, tableName string
 		var col columnInfo
-		if err := rows.Scan(&schemaName, &tableName, &col.Name, &col.DataType, &col.Nullable, &col.Default); err != nil {
+		var key schema.TableKey
+		if err := rows.Scan(&key.Schema, &key.Table, &col.Name, &col.DataType, &col.Nullable, &col.Default); err != nil {
 			return nil, err
 		}
-		key := schemaName + "." + tableName
 		result[key] = append(result[key], col)
 	}
 	return result, rows.Err()
 }
 
-func queryConstraints(ctx context.Context, db *sql.DB) (map[string][]constraintInfo, error) {
+func queryConstraints(ctx context.Context, db *sql.DB) (map[schema.TableKey][]constraintInfo, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT
     n.nspname, c.relname, con.conname, con.contype,
@@ -239,20 +238,19 @@ ORDER BY n.nspname, c.relname, con.contype, con.conname`)
 	}
 	defer rows.Close()
 
-	result := map[string][]constraintInfo{}
+	result := map[schema.TableKey][]constraintInfo{}
 	for rows.Next() {
-		var schemaName, tableName string
+		var key schema.TableKey
 		var con constraintInfo
-		if err := rows.Scan(&schemaName, &tableName, &con.Name, &con.Type, &con.Definition); err != nil {
+		if err := rows.Scan(&key.Schema, &key.Table, &con.Name, &con.Type, &con.Definition); err != nil {
 			return nil, err
 		}
-		key := schemaName + "." + tableName
 		result[key] = append(result[key], con)
 	}
 	return result, rows.Err()
 }
 
-func queryIndexes(ctx context.Context, db *sql.DB) (map[string][]indexInfo, error) {
+func queryIndexes(ctx context.Context, db *sql.DB) (map[schema.TableKey][]indexInfo, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT
     schemaname, tablename, indexname, indexdef
@@ -264,15 +262,14 @@ ORDER BY schemaname, tablename, indexname`)
 	}
 	defer rows.Close()
 
-	// Collect PK index names to skip (they're covered by constraints).
-	result := map[string][]indexInfo{}
+	result := map[schema.TableKey][]indexInfo{}
 	for rows.Next() {
-		var schemaName, tableName, idxName, idxDef string
-		if err := rows.Scan(&schemaName, &tableName, &idxName, &idxDef); err != nil {
+		var key schema.TableKey
+		var idx indexInfo
+		if err := rows.Scan(&key.Schema, &key.Table, &idx.Name, &idx.DDL); err != nil {
 			return nil, err
 		}
-		key := schemaName + "." + tableName
-		result[key] = append(result[key], indexInfo{Name: idxName, DDL: idxDef})
+		result[key] = append(result[key], idx)
 	}
 	return result, rows.Err()
 }

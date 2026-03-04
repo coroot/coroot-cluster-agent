@@ -3,17 +3,18 @@ package dbtracker
 import (
 	"testing"
 
+	"github.com/coroot/coroot-cluster-agent/schema"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_TrimTopTables(t *testing.T) {
 	dbSizes := map[string]*DBSizeSnapshot{
 		"db1": {Tables: []TableSizeEntry{
-			{TableKey: TableKey{DB: "db1", Table: "big"}, Size: 1000},
-			{TableKey: TableKey{DB: "db1", Table: "small"}, Size: 10},
+			{TableKey: schema.TableKey{DB: "db1", Table: "big"}, Size: 1000},
+			{TableKey: schema.TableKey{DB: "db1", Table: "small"}, Size: 10},
 		}},
 		"db2": {Tables: []TableSizeEntry{
-			{TableKey: TableKey{DB: "db2", Table: "medium"}, Size: 500},
+			{TableKey: schema.TableKey{DB: "db2", Table: "medium"}, Size: 500},
 		}},
 	}
 

@@ -1,9 +1,10 @@
 package postgres
 
 import (
-	"github.com/blang/semver"
 	"regexp"
 	"strings"
+
+	"github.com/blang/semver"
 )
 
 var trimVersionRe = regexp.MustCompile("[^0-9.].*")

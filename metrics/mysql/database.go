@@ -91,9 +91,9 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot
 		for _, dbName := range validDBs {
 			info := byDB[dbName]
 			for _, tableName := range info.tableNames {
-				key := dbName + "." + tableName
-				ddl := buildDDL(key, columns[key], indexes[key], foreignKeys[key])
-				snapshot[dbName+"/"+key] = ddl
+				key := schema.TableKey{DB: dbName, Table: tableName}
+				ddl := buildDDL(tableName, columns[key], indexes[key], foreignKeys[key])
+				snapshot[key] = ddl
 			}
 		}
 	}
@@ -130,7 +130,7 @@ ORDER BY table_schema, table_name`)
 			continue
 		}
 		result = append(result, dbtracker.TableSizeEntry{
-			TableKey: dbtracker.TableKey{DB: dbName, Table: tableName},
+			TableKey: schema.TableKey{DB: dbName, Table: tableName},
 			Size:     size,
 		})
 	}
@@ -160,7 +160,7 @@ type foreignKeyInfo struct {
 	RefColumns string
 }
 
-func (dt *databaseTracker) queryColumns(ctx context.Context, db *sql.DB) (map[string][]columnInfo, error) {
+func (dt *databaseTracker) queryColumns(ctx context.Context, db *sql.DB) (map[schema.TableKey][]columnInfo, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT table_schema, table_name, column_name, column_type, is_nullable, column_default, extra
 FROM information_schema.columns
@@ -170,17 +170,17 @@ ORDER BY table_schema, table_name, ordinal_position`)
 	}
 	defer rows.Close()
 
-	result := map[string][]columnInfo{}
+	result := map[schema.TableKey][]columnInfo{}
 	for rows.Next() {
-		var dbName, tableName, colName, colType, nullable, extra string
+		var key schema.TableKey
+		var colName, colType, nullable, extra string
 		var colDefault sql.NullString
-		if err := rows.Scan(&dbName, &tableName, &colName, &colType, &nullable, &colDefault, &extra); err != nil {
+		if err := rows.Scan(&key.DB, &key.Table, &colName, &colType, &nullable, &colDefault, &extra); err != nil {
 			return nil, err
 		}
-		if dt.excludeDatabases[dbName] {
+		if dt.excludeDatabases[key.DB] {
 			continue
 		}
-		key := dbName + "." + tableName
 		result[key] = append(result[key], columnInfo{
 			Name:     colName,
 			Type:     colType,
@@ -192,7 +192,7 @@ ORDER BY table_schema, table_name, ordinal_position`)
 	return result, rows.Err()
 }
 
-func (dt *databaseTracker) queryIndexes(ctx context.Context, db *sql.DB) (map[string][]indexInfo, error) {
+func (dt *databaseTracker) queryIndexes(ctx context.Context, db *sql.DB) (map[schema.TableKey][]indexInfo, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT table_schema, table_name, index_name, non_unique,
        GROUP_CONCAT(column_name ORDER BY seq_in_index)
@@ -204,17 +204,17 @@ ORDER BY table_schema, table_name, index_name`)
 	}
 	defer rows.Close()
 
-	result := map[string][]indexInfo{}
+	result := map[schema.TableKey][]indexInfo{}
 	for rows.Next() {
-		var dbName, tableName, idxName, columns string
+		var key schema.TableKey
+		var idxName, columns string
 		var nonUnique int
-		if err := rows.Scan(&dbName, &tableName, &idxName, &nonUnique, &columns); err != nil {
+		if err := rows.Scan(&key.DB, &key.Table, &idxName, &nonUnique, &columns); err != nil {
 			return nil, err
 		}
-		if dt.excludeDatabases[dbName] {
+		if dt.excludeDatabases[key.DB] {
 			continue
 		}
-		key := dbName + "." + tableName
 		result[key] = append(result[key], indexInfo{
 			Name:      idxName,
 			Unique:    nonUnique == 0,
@@ -225,7 +225,7 @@ ORDER BY table_schema, table_name, index_name`)
 	return result, rows.Err()
 }
 
-func (dt *databaseTracker) queryForeignKeys(ctx context.Context, db *sql.DB) (map[string][]foreignKeyInfo, error) {
+func (dt *databaseTracker) queryForeignKeys(ctx context.Context, db *sql.DB) (map[schema.TableKey][]foreignKeyInfo, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT constraint_schema, table_name, constraint_name,
        GROUP_CONCAT(column_name ORDER BY ordinal_position),
@@ -241,16 +241,16 @@ ORDER BY constraint_schema, table_name, constraint_name`)
 	}
 	defer rows.Close()
 
-	result := map[string][]foreignKeyInfo{}
+	result := map[schema.TableKey][]foreignKeyInfo{}
 	for rows.Next() {
-		var dbName, tableName, constraintName, columns, refSchema, refTable, refColumns string
-		if err := rows.Scan(&dbName, &tableName, &constraintName, &columns, &refSchema, &refTable, &refColumns); err != nil {
+		var key schema.TableKey
+		var constraintName, columns, refSchema, refTable, refColumns string
+		if err := rows.Scan(&key.DB, &key.Table, &constraintName, &columns, &refSchema, &refTable, &refColumns); err != nil {
 			return nil, err
 		}
-		if dt.excludeDatabases[dbName] {
+		if dt.excludeDatabases[key.DB] {
 			continue
 		}
-		key := dbName + "." + tableName
 		result[key] = append(result[key], foreignKeyInfo{
 			Name:       constraintName,
 			Columns:    columns,

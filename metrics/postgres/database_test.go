@@ -53,8 +53,8 @@ func Test_buildDDL(t *testing.T) {
 		{Name: "idx_users_name", DDL: "CREATE INDEX idx_users_name ON public.users USING btree (name)"},
 	}
 
-	got := buildDDL("public.users", cols, cons, idxs)
-	expected := `CREATE TABLE public.users (
+	got := buildDDL("users", cols, cons, idxs)
+	expected := `CREATE TABLE users (
     id integer NOT NULL,
     name character varying(255) DEFAULT 'unnamed',
     email text NOT NULL,
@@ -87,8 +87,8 @@ func Test_buildDDL_NoConstraintsNoIndexes(t *testing.T) {
 		{Name: "value", DataType: "text", Nullable: true},
 	}
 
-	got := buildDDL("public.simple", cols, nil, nil)
-	expected := `CREATE TABLE public.simple (
+	got := buildDDL("simple", cols, nil, nil)
+	expected := `CREATE TABLE simple (
     id integer NOT NULL,
     value text
 );

@@ -1,13 +1,16 @@
 package schema
 
 import (
-	"strings"
-
 	"github.com/pmezard/go-difflib/difflib"
 )
 
-// Snapshot maps "database/schema.table" (or any key) -> text content.
-type Snapshot map[string]string
+type TableKey struct {
+	DB     string
+	Schema string
+	Table  string
+}
+
+type Snapshot map[TableKey]string
 
 const (
 	ChangeTypeChanged = "changed"
@@ -15,7 +18,8 @@ const (
 
 type Change struct {
 	Database string
-	Object   string // "schema.table", "pg_settings", etc.
+	Schema   string
+	Object   string
 	Type     string
 	Diff     string
 }
@@ -28,10 +32,10 @@ func Diff(prev, curr Snapshot) []Change {
 	for key, oldText := range prev {
 		newText, ok := curr[key]
 		if ok && newText != oldText {
-			db, object := splitKey(key)
 			changes = append(changes, Change{
-				Database: db,
-				Object:   object,
+				Database: key.DB,
+				Schema:   key.Schema,
+				Object:   key.Table,
 				Type:     ChangeTypeChanged,
 				Diff:     unifiedDiff(key, oldText, newText),
 			})
@@ -40,15 +44,11 @@ func Diff(prev, curr Snapshot) []Change {
 	return changes
 }
 
-func splitKey(key string) (database, object string) {
-	i := strings.IndexByte(key, '/')
-	if i < 0 {
-		return "", key
+func unifiedDiff(key TableKey, old, new string) string {
+	name := key.DB + "/" + key.Table
+	if key.Schema != "" {
+		name = key.DB + "/" + key.Schema + "/" + key.Table
 	}
-	return key[:i], key[i+1:]
-}
-
-func unifiedDiff(name, old, new string) string {
 	diff, _ := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
 		A:        difflib.SplitLines(old),
 		B:        difflib.SplitLines(new),

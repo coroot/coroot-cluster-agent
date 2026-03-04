@@ -1,8 +1,9 @@
 package postgres
 
 import (
-	"github.com/dustin/go-humanize"
 	"sort"
+
+	"github.com/dustin/go-humanize"
 )
 
 type Batch struct {

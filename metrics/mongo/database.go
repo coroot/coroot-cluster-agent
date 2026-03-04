@@ -82,7 +82,7 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot
 					dt.logger.Warning("collStats for", db.Name+"."+collName+":", err)
 				} else {
 					tables = append(tables, dbtracker.TableSizeEntry{
-						TableKey: dbtracker.TableKey{DB: db.Name, Table: collName},
+						TableKey: schema.TableKey{DB: db.Name, Table: collName},
 						Size:     size,
 					})
 				}
@@ -94,7 +94,7 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot
 					dt.logger.Warning("list indexes for", db.Name+"."+collName+":", err)
 					continue
 				}
-				snapshot[db.Name+"/"+db.Name+"."+collName] = text
+				snapshot[schema.TableKey{DB: db.Name, Table: collName}] = text
 			}
 		}
 

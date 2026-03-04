@@ -18,19 +18,13 @@ type ChangeEmitter interface {
 	Emit(change schema.Change, dbSystem, targetAddr string)
 }
 
-type TableKey struct {
-	DB     string
-	Schema string
-	Table  string
-}
-
 type TableSizeEntry struct {
-	TableKey
+	schema.TableKey
 	Size float64
 }
 
 type TableGrowthEntry struct {
-	TableKey
+	schema.TableKey
 	Growth float64
 }
 
@@ -51,7 +45,7 @@ type Tracker struct {
 	prev           schema.Snapshot
 	lastTracked    time.Time
 	DBSizes        map[string]*DBSizeSnapshot
-	prevTableSizes map[TableKey]float64
+	prevTableSizes map[schema.TableKey]float64
 	TableGrowth    []TableGrowthEntry
 }
 
@@ -93,7 +87,7 @@ func (t *Tracker) Track(ctx context.Context, emitter ChangeEmitter, targetAddr s
 }
 
 func (t *Tracker) computeTableGrowth(dbSizes map[string]*DBSizeSnapshot, elapsed time.Duration) {
-	currSizes := map[TableKey]float64{}
+	currSizes := map[schema.TableKey]float64{}
 	for _, snap := range dbSizes {
 		for _, te := range snap.Tables {
 			currSizes[te.TableKey] = te.Size
