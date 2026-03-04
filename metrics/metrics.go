@@ -12,6 +12,7 @@ import (
 	"github.com/coroot/coroot-cluster-agent/k8s"
 	"github.com/coroot/coroot-cluster-agent/metrics/aws"
 	"github.com/coroot/coroot-cluster-agent/metrics/ksm"
+	"github.com/coroot/coroot-cluster-agent/schema/emitter"
 	"github.com/coroot/logger"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -41,6 +42,8 @@ type Metrics struct {
 	k8s          *k8s.K8S
 	k8sPodEvents <-chan k8s.PodEvent
 	ksm          *ksm.KSM
+
+	changeEmitter *emitter.ChangeEmitter
 }
 
 func NewMetrics(k8s *k8s.K8S) (*Metrics, error) {
@@ -69,6 +72,10 @@ func NewMetrics(k8s *k8s.K8S) (*Metrics, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if *flags.TrackDatabaseChanges {
+		ms.changeEmitter = emitter.NewChangeEmitter()
 	}
 
 	klog.Infof("endpoint: %s, scrape interval: %s", ms.endpoint, ms.scrapeInterval)
@@ -201,7 +208,7 @@ func (ms *Metrics) startExporters() {
 					}
 				}
 			}
-			if err := t.StartExporter(ms.reg, credentials, ms.scrapeInterval, ms.scrapeTimeout); err != nil {
+			if err := t.StartExporter(ms.reg, credentials, ms.scrapeInterval, ms.scrapeTimeout, ms.changeEmitter, *flags.MaxTablesPerDatabase, *flags.TrackDatabaseSizes, *flags.ExcludeDatabases); err != nil {
 				t.logger.Errorf("failed to start exporter: %s", err)
 				continue
 			}
