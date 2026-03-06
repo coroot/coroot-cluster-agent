@@ -14,7 +14,8 @@ import (
 	kafka "github.com/coroot/coroot-cluster-agent/metrics/kafka"
 	"github.com/coroot/coroot-cluster-agent/metrics/mongo"
 	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
-	postgres "github.com/coroot/coroot-pg-agent/collector"
+	"github.com/coroot/coroot-cluster-agent/metrics/postgres"
+	"github.com/coroot/coroot-cluster-agent/schema/emitter"
 	"github.com/coroot/logger"
 	"github.com/go-kit/log/level"
 	redis "github.com/oliver006/redis_exporter/exporter"
@@ -92,7 +93,7 @@ func (t *Target) IsExporterStarted() bool {
 	return t.coll != nil
 }
 
-func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, scrapeInterval, scrapeTimeout time.Duration) error {
+func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, scrapeInterval, scrapeTimeout time.Duration, changeEmitter *emitter.ChangeEmitter, maxTablesPerDB int, trackSizes bool, excludeDatabases []string) error {
 	collectTimeout := scrapeTimeout - time.Second
 	if collectTimeout <= 0 {
 		collectTimeout = time.Second
@@ -110,7 +111,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		}
 		query.Set("sslmode", sslmode)
 		dsn := fmt.Sprintf("postgresql://%s@%s/postgres?%s", userPass, t.Addr, query.Encode())
-		collector, err := postgres.New(dsn, scrapeInterval, collectTimeout, t.logger)
+		collector, err := postgres.New(dsn, scrapeInterval, collectTimeout, t.logger, changeEmitter, t.Addr, maxTablesPerDB, trackSizes, excludeDatabases)
 		if err != nil {
 			return err
 		}
@@ -127,7 +128,8 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		}
 		query.Set("tls", tls)
 		dsn := fmt.Sprintf("%s@tcp(%s)/mysql?%s", userPass, t.Addr, query.Encode())
-		collector, err := mysql.New(dsn, t.logger, scrapeInterval, collectTimeout)
+		collector, err := mysql.New(dsn, t.logger, scrapeInterval, collectTimeout,
+			changeEmitter, t.Addr, maxTablesPerDB, trackSizes, excludeDatabases)
 		if err != nil {
 			return err
 		}
@@ -156,8 +158,13 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			t.Addr,
 			credentials.Username,
 			credentials.Password,
+			scrapeInterval,
 			collectTimeout,
 			t.logger,
+			changeEmitter,
+			t.Addr,
+			maxTablesPerDB,
+			trackSizes,
 		)
 		t.coll = collector
 		t.stop = func() { _ = collector.Close() }

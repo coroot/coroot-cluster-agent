@@ -7,7 +7,7 @@ import (
 
 	"github.com/coroot/coroot-cluster-agent/common"
 
-	"github.com/coroot/coroot-pg-agent/obfuscate"
+	"github.com/coroot/coroot-cluster-agent/obfuscate"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
