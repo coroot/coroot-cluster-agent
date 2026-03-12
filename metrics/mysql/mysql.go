@@ -78,10 +78,12 @@ type Collector struct {
 
 	invalidQueries map[string]bool
 
-	dbTracker        *databaseTracker
-	emitter          dbtracker.ChangeEmitter
-	targetAddr       string
-	prevSettingsText string
+	dbTracker         *databaseTracker
+	emitter           dbtracker.ChangeEmitter
+	targetAddr        string
+	prevSettingsText  string
+	isMariaDB         bool
+	writableVariables map[string]bool
 }
 
 func New(dsn string, logger logger.Logger, scrapeInterval, collectTimeout time.Duration,
@@ -196,6 +198,7 @@ func (c *Collector) snapshot() {
 		c.scrapeErrors[err.Error()] = true
 		return
 	}
+	c.isMariaDB = strings.Contains(strings.ToLower(c.globalVariables["version"]), "mariadb")
 	if err := c.updateVariables(ctx, "SHOW GLOBAL STATUS", c.globalStatus); err != nil {
 		c.logger.Warning(err)
 		c.scrapeErrors[err.Error()] = true
@@ -223,7 +226,7 @@ func (c *Collector) snapshot() {
 	}
 
 	if c.emitter != nil {
-		c.trackSettingsChanges()
+		c.trackSettingsChanges(ctx)
 	}
 	if c.dbTracker != nil {
 		c.dbTracker.Track(ctx, c.emitter, c.targetAddr)
@@ -254,9 +257,38 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dTableSizeGrowth
 }
 
-func (c *Collector) trackSettingsChanges() {
-	names := make([]string, 0, len(c.globalVariables))
-	for name := range c.globalVariables {
+func (c *Collector) loadWritableVariableNames(ctx context.Context) error {
+	var query string
+	if c.isMariaDB {
+		query = "SELECT VARIABLE_NAME FROM information_schema.SYSTEM_VARIABLES WHERE READ_ONLY = 'NO'"
+	} else {
+		query = "SELECT VARIABLE_NAME FROM performance_schema.variables_info WHERE VARIABLE_SOURCE != 'COMPILED'"
+	}
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	c.writableVariables = map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			c.logger.Warning(err)
+			continue
+		}
+		c.writableVariables[name] = true
+	}
+	return nil
+}
+
+func (c *Collector) trackSettingsChanges(ctx context.Context) {
+	if err := c.loadWritableVariableNames(ctx); err != nil {
+		c.logger.Warning("failed to load writable variable names:", err)
+		return
+	}
+
+	names := make([]string, 0, len(c.writableVariables))
+	for name := range c.writableVariables {
 		names = append(names, name)
 	}
 	sort.Strings(names)
