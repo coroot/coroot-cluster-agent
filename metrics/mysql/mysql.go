@@ -64,6 +64,7 @@ type Collector struct {
 	cancelFunc   context.CancelFunc
 	lock         sync.RWMutex
 	scrapeErrors map[string]bool
+	isUp         bool
 
 	scrapeInterval time.Duration
 	collectTimeout time.Duration
@@ -142,18 +143,17 @@ func (c *Collector) Close() error {
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
-	ctx, cancelFunc := context.WithTimeout(c.ctx, c.collectTimeout)
-	defer cancelFunc()
+	c.lock.RLock()
+	defer c.lock.RUnlock()
 
-	if err := c.db.PingContext(ctx); err != nil {
-		c.logger.Warning("probe failed:", err)
+	if !c.isUp {
 		ch <- common.Gauge(dUp, 0)
-		ch <- common.Gauge(dScrapeError, 1, err.Error(), "")
+		for e := range c.scrapeErrors {
+			ch <- common.Gauge(dScrapeError, 1, e, "")
+		}
 		return
 	}
 	ch <- common.Gauge(dUp, 1)
-	c.lock.RLock()
-	defer c.lock.RUnlock()
 	if version := c.globalVariables["version"]; version != "" {
 		ch <- common.Gauge(dInfo, 1, version, c.globalVariables["server_id"], c.globalVariables["server_uuid"])
 	}
@@ -196,8 +196,10 @@ func (c *Collector) snapshot() {
 	if err := c.updateVariables(ctx, "SHOW GLOBAL VARIABLES", c.globalVariables); err != nil {
 		c.logger.Warning(err)
 		c.scrapeErrors[err.Error()] = true
+		c.isUp = false
 		return
 	}
+	c.isUp = true
 	c.isMariaDB = strings.Contains(strings.ToLower(c.globalVariables["version"]), "mariadb")
 	if err := c.updateVariables(ctx, "SHOW GLOBAL STATUS", c.globalStatus); err != nil {
 		c.logger.Warning(err)
