@@ -23,6 +23,7 @@ var (
 	KubeStateMetricsListenAddress = kingpin.Flag("kube-state-metrics-listen-address", "Listen address for the kube-state-metrics endpoint").Default("127.0.0.1:10303").Envar("KUBE_STATE_METRICS_LISTEN_ADDRESS").String()
 
 	InsecureSkipVerify = kingpin.Flag("insecure-skip-verify", "Skip TLS certificate verification").Envar("INSECURE_SKIP_VERIFY").Default("false").Bool()
+	CAFile             = kingpin.Flag("ca-file", "Path to the custom CA certificate file").Envar("CA_FILE").String()
 
 	CollectKubernetesEvents = kingpin.Flag("collect-kubernetes-events", "Collect and forward Kubernetes events").Envar("COLLECT_KUBERNETES_EVENTS").Default("true").Bool()
 

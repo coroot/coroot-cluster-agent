@@ -1,7 +1,6 @@
 package config
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +33,7 @@ func NewUpdater() (*Updater, error) {
 		httpClient: &http.Client{
 			Timeout: *flags.ConfigUpdateTimeout,
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: *flags.InsecureSkipVerify},
+				TLSClientConfig: common.TlsConfig(),
 			},
 		},
 	}

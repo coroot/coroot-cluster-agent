@@ -3,7 +3,6 @@ package profiles
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -55,7 +54,7 @@ func NewProfiles() *Profiles {
 		scrapeTimeout:  *flags.ProfilesScrapeTimeout,
 		httpClient: &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: *flags.InsecureSkipVerify},
+				TLSClientConfig: common.TlsConfig(),
 			},
 		},
 		prevCache: map[ProfileKey]map[uint64]int64{},

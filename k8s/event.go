@@ -22,9 +22,7 @@ func NewEventsLogger() *EventsLogger {
 	opts := []otlploghttp.Option{
 		otlploghttp.WithEndpointURL((*flags.CorootURL).JoinPath("/v1/logs").String()),
 		otlploghttp.WithHeaders(common.AuthHeaders(*flags.APIKey)),
-	}
-	if *flags.InsecureSkipVerify {
-		opts = append(opts, otlploghttp.WithInsecure())
+		otlploghttp.WithTLSClientConfig(common.TlsConfig()),
 	}
 	exporter, _ := otlploghttp.New(context.Background(), opts...)
 	batcher := sdk.NewBatchProcessor(exporter)
