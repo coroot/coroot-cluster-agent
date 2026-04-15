@@ -42,7 +42,10 @@ func (ms *Metrics) runScraper() error {
 			RemoteTimeout: model.Duration(RemoteWriteTimeout),
 			QueueConfig:   config.DefaultQueueConfig,
 			HTTPClientConfig: promCommon.HTTPClientConfig{
-				TLSConfig: promCommon.TLSConfig{InsecureSkipVerify: *flags.InsecureSkipVerify},
+				TLSConfig: promCommon.TLSConfig{
+					InsecureSkipVerify: *flags.InsecureSkipVerify,
+					CAFile:             *flags.CAFile,
+				},
 			},
 		},
 	)
