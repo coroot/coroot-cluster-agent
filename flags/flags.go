@@ -1,6 +1,9 @@
 package flags
 
 import (
+	"os"
+	"strings"
+
 	"github.com/alecthomas/kingpin/v2"
 	"k8s.io/klog"
 )
@@ -34,6 +37,10 @@ var (
 )
 
 func init() {
+	if strings.HasSuffix(os.Args[0], ".test") {
+		return
+	}
+
 	kingpin.HelpFlag.Short('h').Hidden()
 	kingpin.Parse()
 
