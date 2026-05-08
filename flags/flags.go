@@ -24,7 +24,6 @@ var (
 	ProfilesScrapeTimeout  = kingpin.Flag("profiles-scrape-timeout", "Timeout for profiling scrape requests").Envar("PROFILES_SCRAPE_TIMEOUT").Default("10s").Duration()
 
 	KubeStateMetricsListenAddress = kingpin.Flag("kube-state-metrics-listen-address", "Listen address for the kube-state-metrics endpoint").Default("127.0.0.1:10303").Envar("KUBE_STATE_METRICS_LISTEN_ADDRESS").String()
-	KubeStateMetricsMinAge        = kingpin.Flag("kube-state-metrics-min-age", "Don't emit kube_pod_* / kube_job_* metrics for resources younger than this. For terminal-phase resources the actual run duration is used. Suppresses high-cardinality from short-lived job/cronjob workloads. 0 disables.").Default("30s").Envar("KUBE_STATE_METRICS_MIN_AGE").Duration()
 
 	InsecureSkipVerify = kingpin.Flag("insecure-skip-verify", "Skip TLS certificate verification").Envar("INSECURE_SKIP_VERIFY").Default("false").Bool()
 	CAFile             = kingpin.Flag("ca-file", "Path to the custom CA certificate file").Envar("CA_FILE").String()
