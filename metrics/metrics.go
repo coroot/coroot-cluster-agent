@@ -68,7 +68,7 @@ func NewMetrics(k8s *k8s.K8S) (*Metrics, error) {
 	ksmAddr := *flags.KubeStateMetricsListenAddress
 	if ksmAddr != "" && k8s != nil {
 		ms.ksmAddr = ksmAddr
-		ms.ksm, err = ksm.NewKSM(ksmAddr)
+		ms.ksm, err = ksm.NewKSM(ksmAddr, *flags.KubeStateMetricsMinAge)
 		if err != nil {
 			return nil, err
 		}
