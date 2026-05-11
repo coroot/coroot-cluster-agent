@@ -2,6 +2,7 @@ package ksm
 
 import (
 	"context"
+	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
 	"gopkg.in/yaml.v3"
@@ -16,7 +17,7 @@ type KSM struct {
 	stop context.CancelFunc
 }
 
-func NewKSM(listenAddr string) (*KSM, error) {
+func NewKSM(listenAddr string, minAge time.Duration) (*KSM, error) {
 	host, port, err := common.SplitHostPort(listenAddr)
 	if err != nil {
 		return nil, err
@@ -28,6 +29,7 @@ func NewKSM(listenAddr string) (*KSM, error) {
 		Port:          port,
 		TelemetryPort: port + 1,
 		TotalShards:   1,
+		MinAge:        minAge,
 		Namespaces:    options.DefaultNamespaces,
 		Resources: options.ResourceSet{
 			"namespaces":             struct{}{},
