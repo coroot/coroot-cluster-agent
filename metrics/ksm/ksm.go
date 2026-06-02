@@ -84,8 +84,9 @@ func (ksm *KSM) Stop() {
 }
 
 func customResourceConfig() string {
+	resources := append(fluxcd(), argocd()...)
 	cfg := crs.Metrics{
-		Spec: crs.MetricsSpec{Resources: fluxcd()},
+		Spec: crs.MetricsSpec{Resources: resources},
 	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
