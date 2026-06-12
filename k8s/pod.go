@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 var (
@@ -31,7 +32,17 @@ type Pod struct {
 }
 
 func podFromObj(obj any) *Pod {
-	pod := obj.(*corev1.Pod)
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return nil
+		}
+		pod, ok = tombstone.Obj.(*corev1.Pod)
+		if !ok {
+			return nil
+		}
+	}
 	res := &Pod{
 		Id: PodId{
 			Name:      pod.Name,
