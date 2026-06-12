@@ -124,7 +124,7 @@ func (k8s *K8S) start() {
 		pods.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				pod := podFromObj(obj)
-				if !pod.Running() {
+				if pod == nil || !pod.Running() {
 					return
 				}
 				k8s.sendPodEvent(PodEvent{Type: PodEventTypeAdd, Pod: pod})
@@ -132,13 +132,16 @@ func (k8s *K8S) start() {
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				pod := podFromObj(newObj)
 				old := podFromObj(oldObj)
-				if !pod.Running() || pod.Equal(old) {
+				if pod == nil || old == nil || !pod.Running() || pod.Equal(old) {
 					return
 				}
 				k8s.sendPodEvent(PodEvent{Type: PodEventTypeChange, Pod: pod, Old: old})
 			},
 			DeleteFunc: func(obj interface{}) {
 				pod := podFromObj(obj)
+				if pod == nil {
+					return
+				}
 				k8s.sendPodEvent(PodEvent{Type: PodEventTypeDelete, Pod: pod})
 			},
 		})
