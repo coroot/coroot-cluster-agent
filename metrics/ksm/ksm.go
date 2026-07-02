@@ -85,6 +85,8 @@ func (ksm *KSM) Stop() {
 
 func customResourceConfig() string {
 	resources := append(fluxcd(), argocd()...)
+	resources = append(resources, cnpg()...)
+	resources = append(resources, perconaPG()...)
 	cfg := crs.Metrics{
 		Spec: crs.MetricsSpec{Resources: resources},
 	}

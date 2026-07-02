@@ -19,11 +19,16 @@ type databaseTracker struct {
 	maxTablesPerDB   int
 	trackSchema      bool
 	trackSizes       bool
+	trackBloat       bool
 	excludeDatabases map[string]bool
 	logger           logger.Logger
+
+	bloat          map[string]*dbBloat
+	tableStats     map[string][]tableStatEntry
+	vacuumProgress map[string][]vacuumProgressEntry
 }
 
-func newDatabaseTracker(db *sql.DB, baseDSN string, maxTablesPerDB int, trackSchema, trackSizes bool, excludeDatabases []string, logger logger.Logger) *databaseTracker {
+func newDatabaseTracker(db *sql.DB, baseDSN string, maxTablesPerDB int, trackSchema, trackSizes, trackBloat bool, excludeDatabases []string, logger logger.Logger) *databaseTracker {
 	exclude := make(map[string]bool, len(excludeDatabases))
 	for _, dbName := range excludeDatabases {
 		exclude[dbName] = true
@@ -34,6 +39,7 @@ func newDatabaseTracker(db *sql.DB, baseDSN string, maxTablesPerDB int, trackSch
 		maxTablesPerDB:   maxTablesPerDB,
 		trackSchema:      trackSchema,
 		trackSizes:       trackSizes,
+		trackBloat:       trackBloat,
 		excludeDatabases: exclude,
 		logger:           logger,
 	}
@@ -48,12 +54,24 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot
 	}
 
 	snapshot := schema.Snapshot{}
+	bloat := map[string]*dbBloat{}
+	tableStats := map[string][]tableStatEntry{}
+	vacuumProgress := map[string][]vacuumProgressEntry{}
 	for _, dbName := range databases {
 		dsn := replaceDatabaseInDSN(dt.baseDSN, dbName)
-		tables, err := dt.collectDatabase(ctx, dsn, dbName, snapshot)
+		tables, b, stats, vac, err := dt.collectDatabase(ctx, dsn, dbName, snapshot)
 		if err != nil {
 			dt.logger.Warning("database tracking for", dbName+":", err)
 			continue
+		}
+		if b != nil {
+			bloat[dbName] = b
+		}
+		if len(stats) > 0 {
+			tableStats[dbName] = stats
+		}
+		if len(vac) > 0 {
+			vacuumProgress[dbName] = vac
 		}
 		if dt.trackSizes {
 			if snap, ok := dbSizes[dbName]; ok {
@@ -63,13 +81,16 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot
 			}
 		}
 	}
+	dt.bloat = bloat
+	dt.tableStats = tableStats
+	dt.vacuumProgress = vacuumProgress
 	return snapshot, dbSizes, nil
 }
 
-func (dt *databaseTracker) collectDatabase(ctx context.Context, dsn, dbName string, snapshot schema.Snapshot) ([]dbtracker.TableSizeEntry, error) {
+func (dt *databaseTracker) collectDatabase(ctx context.Context, dsn, dbName string, snapshot schema.Snapshot) ([]dbtracker.TableSizeEntry, *dbBloat, []tableStatEntry, []vacuumProgressEntry, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, nil, err
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
@@ -81,28 +102,36 @@ FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind = 'r'
     AND n.nspname NOT IN ('pg_catalog', 'information_schema')`).Scan(&tableCount); err != nil {
-		return nil, fmt.Errorf("count tables: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("count tables: %w", err)
 	}
+
+	var bloat *dbBloat
+	if dt.trackBloat {
+		bloat = collectBloat(ctx, db, dt.logger)
+	}
+	// vacuum progress must be resolved here (per-database) — pg_stat_progress_vacuum.relid
+	// only maps to a table name via pg_class in the database the vacuum runs in
+	vacuumProgress := collectVacuumProgress(ctx, db, dt.logger)
 
 	if dt.maxTablesPerDB > 0 && tableCount > dt.maxTablesPerDB {
 		dt.logger.Warningf("database %s has %d tables (limit %d), skipping", dbName, tableCount, dt.maxTablesPerDB)
-		return nil, nil
+		return nil, bloat, nil, vacuumProgress, nil
 	}
 
 	if dt.trackSchema {
 		columns, err := queryColumns(ctx, db)
 		if err != nil {
-			return nil, fmt.Errorf("query columns: %w", err)
+			return nil, bloat, nil, vacuumProgress, fmt.Errorf("query columns: %w", err)
 		}
 
 		constraints, err := queryConstraints(ctx, db)
 		if err != nil {
-			return nil, fmt.Errorf("query constraints: %w", err)
+			return nil, bloat, nil, vacuumProgress, fmt.Errorf("query constraints: %w", err)
 		}
 
 		indexes, err := queryIndexes(ctx, db)
 		if err != nil {
-			return nil, fmt.Errorf("query indexes: %w", err)
+			return nil, bloat, nil, vacuumProgress, fmt.Errorf("query indexes: %w", err)
 		}
 
 		tables := map[schema.TableKey]bool{}
@@ -117,14 +146,16 @@ WHERE c.relkind = 'r'
 	}
 
 	if !dt.trackSizes {
-		return nil, nil
+		return nil, bloat, nil, vacuumProgress, nil
 	}
+
+	tableStats := collectTableStats(ctx, db, dt.logger)
 
 	tableSizes, err := queryTableSizes(ctx, db, dbName)
 	if err != nil {
 		dt.logger.Warning("query table sizes for", dbName+":", err)
 	}
-	return tableSizes, nil
+	return tableSizes, bloat, tableStats, vacuumProgress, nil
 }
 
 type columnInfo struct {

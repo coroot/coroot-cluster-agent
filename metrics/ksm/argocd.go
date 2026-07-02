@@ -12,18 +12,6 @@ var resourceLabels = map[string][]string{
 	"resource_name":      {"name"},
 }
 
-func info(name string, path []string, labels map[string][]string) crs.Generator {
-	return crs.Generator{
-		Name: name,
-		Each: crs.Metric{
-			Type: metric.Info,
-			Info: &crs.MetricInfo{
-				MetricMeta: crs.MetricMeta{Path: path, LabelsFromPath: labels},
-			},
-		},
-	}
-}
-
 func merge(base map[string][]string, extra map[string][]string) map[string][]string {
 	out := make(map[string][]string, len(base)+len(extra))
 	for k, v := range base {
