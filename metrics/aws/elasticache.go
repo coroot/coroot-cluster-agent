@@ -4,8 +4,8 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/elasticache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ectypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
 	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/klog"
@@ -21,12 +21,12 @@ var (
 
 type ECCollector struct {
 	region  string
-	cluster *elasticache.CacheCluster
-	node    *elasticache.CacheNode
+	cluster *ectypes.CacheCluster
+	node    *ectypes.CacheNode
 	ip      *net.IPAddr
 }
 
-func NewECCollector(region string, cluster *elasticache.CacheCluster, node *elasticache.CacheNode) *ECCollector {
+func NewECCollector(region string, cluster *ectypes.CacheCluster, node *ectypes.CacheNode) *ECCollector {
 	return &ECCollector{region: region, cluster: cluster, node: node}
 }
 
@@ -35,29 +35,29 @@ func (c *ECCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *ECCollector) Collect(ch chan<- prometheus.Metric) {
-	ch <- common.Gauge(dECStatus, 1, aws.StringValue(c.node.CacheNodeStatus))
+	ch <- common.Gauge(dECStatus, 1, aws.ToString(c.node.CacheNodeStatus))
 
-	cluster := aws.StringValue(c.cluster.ReplicationGroupId)
+	cluster := aws.ToString(c.cluster.ReplicationGroupId)
 	if cluster == "" {
-		cluster = aws.StringValue(c.cluster.CacheClusterId)
+		cluster = aws.ToString(c.cluster.CacheClusterId)
 	}
 	var address, port, ip string
 	if c.node.Endpoint != nil {
-		address = aws.StringValue(c.node.Endpoint.Address)
-		port = strconv.Itoa(int(aws.Int64Value(c.node.Endpoint.Port)))
+		address = aws.ToString(c.node.Endpoint.Address)
+		port = strconv.Itoa(int(aws.ToInt32(c.node.Endpoint.Port)))
 	}
 	if c.ip != nil {
 		ip = c.ip.String()
 	}
 	ch <- common.Gauge(dECInfo, 1,
 		c.region,
-		aws.StringValue(c.node.CustomerAvailabilityZone),
+		aws.ToString(c.node.CustomerAvailabilityZone),
 		address,
 		ip,
 		port,
-		aws.StringValue(c.cluster.Engine),
-		aws.StringValue(c.cluster.EngineVersion),
-		aws.StringValue(c.cluster.CacheNodeType),
+		aws.ToString(c.cluster.Engine),
+		aws.ToString(c.cluster.EngineVersion),
+		aws.ToString(c.cluster.CacheNodeType),
 		cluster,
 	)
 }
@@ -65,12 +65,12 @@ func (c *ECCollector) Collect(ch chan<- prometheus.Metric) {
 func (c *ECCollector) Stop() {
 }
 
-func (c *ECCollector) update(region string, cluster *elasticache.CacheCluster, node *elasticache.CacheNode) {
+func (c *ECCollector) update(region string, cluster *ectypes.CacheCluster, node *ectypes.CacheNode) {
 	c.region = region
 	c.cluster = cluster
 	c.node = node
 	if c.node.Endpoint != nil {
-		if ip, err := net.ResolveIPAddr("", aws.StringValue(c.node.Endpoint.Address)); err != nil {
+		if ip, err := net.ResolveIPAddr("", aws.ToString(c.node.Endpoint.Address)); err != nil {
 			klog.Errorln(err)
 		} else {
 			c.ip = ip

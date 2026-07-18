@@ -5,9 +5,9 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
-	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/logparser"
 	"github.com/prometheus/client_golang/prometheus"
@@ -53,17 +53,17 @@ type RDSCollector struct {
 	discoverer *Discoverer
 
 	region   string
-	instance *rds.DBInstance
+	instance *rdstypes.DBInstance
 	ip       *net.IPAddr
 
 	logReader *LogReader
 	logParser *logparser.Parser
 }
 
-func NewRDSCollector(discoverer *Discoverer, region string, instance *rds.DBInstance) *RDSCollector {
+func NewRDSCollector(discoverer *Discoverer, region string, instance *rdstypes.DBInstance) *RDSCollector {
 	c := &RDSCollector{discoverer: discoverer, region: region, instance: instance}
 
-	switch aws.StringValue(c.instance.Engine) {
+	switch aws.ToString(c.instance.Engine) {
 	case "postgres", "aurora-postgresql":
 		ch := make(chan logparser.LogEntry)
 		c.logParser = logparser.NewParser(ch, nil, nil)
@@ -83,37 +83,37 @@ func (c *RDSCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 	var address, port, ip string
 	if c.instance.Endpoint != nil {
-		address = aws.StringValue(c.instance.Endpoint.Address)
-		port = strconv.Itoa(int(aws.Int64Value(c.instance.Endpoint.Port)))
+		address = aws.ToString(c.instance.Endpoint.Address)
+		port = strconv.Itoa(int(aws.ToInt32(c.instance.Endpoint.Port)))
 	}
 	if c.ip != nil {
 		ip = c.ip.String()
 	}
-	ch <- common.Gauge(dRDSStatus, 1, aws.StringValue(c.instance.DBInstanceStatus))
+	ch <- common.Gauge(dRDSStatus, 1, aws.ToString(c.instance.DBInstanceStatus))
 	ch <- common.Gauge(dRDSInfo, 1,
 		c.region,
-		aws.StringValue(c.instance.AvailabilityZone),
+		aws.ToString(c.instance.AvailabilityZone),
 		address,
 		ip,
 		port,
-		aws.StringValue(c.instance.Engine),
-		aws.StringValue(c.instance.EngineVersion),
-		aws.StringValue(c.instance.DBInstanceClass),
-		aws.StringValue(c.instance.StorageType),
-		strconv.FormatBool(aws.BoolValue(c.instance.MultiAZ)),
-		aws.StringValue(c.instance.SecondaryAvailabilityZone),
-		idWithRegion(c.region, aws.StringValue(c.instance.DBClusterIdentifier)),
-		idWithRegion(c.region, aws.StringValue(c.instance.ReadReplicaSourceDBInstanceIdentifier)),
+		aws.ToString(c.instance.Engine),
+		aws.ToString(c.instance.EngineVersion),
+		aws.ToString(c.instance.DBInstanceClass),
+		aws.ToString(c.instance.StorageType),
+		strconv.FormatBool(aws.ToBool(c.instance.MultiAZ)),
+		aws.ToString(c.instance.SecondaryAvailabilityZone),
+		idWithRegion(c.region, aws.ToString(c.instance.DBClusterIdentifier)),
+		idWithRegion(c.region, aws.ToString(c.instance.ReadReplicaSourceDBInstanceIdentifier)),
 	)
-	ch <- common.Gauge(dRDSAllocatedStorage, float64(aws.Int64Value(c.instance.AllocatedStorage)))
-	ch <- common.Gauge(dRDSStorageAutoscalingThreshold, float64(aws.Int64Value(c.instance.MaxAllocatedStorage)))
-	ch <- common.Gauge(dRDSStorageProvisionedIOPs, float64(aws.Int64Value(c.instance.Iops)))
-	ch <- common.Gauge(dRDSBackupRetentionPeriod, float64(aws.Int64Value(c.instance.BackupRetentionPeriod)))
+	ch <- common.Gauge(dRDSAllocatedStorage, float64(aws.ToInt32(c.instance.AllocatedStorage)))
+	ch <- common.Gauge(dRDSStorageAutoscalingThreshold, float64(aws.ToInt32(c.instance.MaxAllocatedStorage)))
+	ch <- common.Gauge(dRDSStorageProvisionedIOPs, float64(aws.ToInt32(c.instance.Iops)))
+	ch <- common.Gauge(dRDSBackupRetentionPeriod, float64(aws.ToInt32(c.instance.BackupRetentionPeriod)))
 	for _, r := range c.instance.ReadReplicaDBInstanceIdentifiers {
-		ch <- common.Gauge(dRDSReadReplicaInfo, float64(1), idWithRegion(c.region, aws.StringValue(r)))
+		ch <- common.Gauge(dRDSReadReplicaInfo, float64(1), idWithRegion(c.region, r))
 	}
 
-	if aws.Int64Value(c.instance.MonitoringInterval) > 0 && c.instance.DbiResourceId != nil {
+	if aws.ToInt32(c.instance.MonitoringInterval) > 0 && c.instance.DbiResourceId != nil {
 		c.collectOsMetrics(ch)
 	}
 
@@ -133,11 +133,11 @@ func (c *RDSCollector) Stop() {
 	}
 }
 
-func (c *RDSCollector) update(region string, instance *rds.DBInstance) {
+func (c *RDSCollector) update(region string, instance *rdstypes.DBInstance) {
 	c.region = region
 	c.instance = instance
 	if instance.Endpoint != nil {
-		if ip, err := net.ResolveIPAddr("", aws.StringValue(instance.Endpoint.Address)); err != nil {
+		if ip, err := net.ResolveIPAddr("", aws.ToString(instance.Endpoint.Address)); err != nil {
 			klog.Warning(err)
 		} else {
 			c.ip = ip
@@ -147,14 +147,14 @@ func (c *RDSCollector) update(region string, instance *rds.DBInstance) {
 
 func (c *RDSCollector) collectOsMetrics(ch chan<- prometheus.Metric) {
 	input := cloudwatchlogs.GetLogEventsInput{
-		Limit:         aws.Int64(1),
+		Limit:         aws.Int32(1),
 		StartFromHead: aws.Bool(false),
 		LogGroupName:  aws.String(rdsMetricsLogGroupName),
 		LogStreamName: c.instance.DbiResourceId,
 	}
-	out, err := cloudwatchlogs.New(c.discoverer).GetLogEvents(&input)
+	out, err := c.discoverer.CloudWatchLogsClient().GetLogEvents(c.discoverer.ctx, &input)
 	if err != nil {
-		klog.Warningf("failed to read log stream %s:%s: %s", rdsMetricsLogGroupName, aws.StringValue(c.instance.DbiResourceId), err)
+		klog.Warningf("failed to read log stream %s:%s: %s", rdsMetricsLogGroupName, aws.ToString(c.instance.DbiResourceId), err)
 		c.discoverer.registerError(err)
 		return
 	}
@@ -162,7 +162,7 @@ func (c *RDSCollector) collectOsMetrics(ch chan<- prometheus.Metric) {
 		return
 	}
 	var m RDSOSMetrics
-	if err := json.Unmarshal([]byte(*out.Events[0].Message), &m); err != nil {
+	if err := json.Unmarshal([]byte(aws.ToString(out.Events[0].Message)), &m); err != nil {
 		klog.Warningln("failed to parse enhanced monitoring data:", err)
 		return
 	}

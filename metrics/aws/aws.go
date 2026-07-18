@@ -1,20 +1,22 @@
 package aws
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/arn"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/client"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/elasticache"
-	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/smithy-go"
 	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/coroot-cluster-agent/config"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,10 +32,15 @@ var (
 )
 
 type Discoverer struct {
-	cfg  *config.AWSConfig
-	sess *session.Session
-	reg  prometheus.Registerer
-	stop chan struct{}
+	cfg    *config.AWSConfig
+	awsCfg aws.Config
+	ctx    context.Context
+	reg    prometheus.Registerer
+	stop   chan struct{}
+
+	rdsClient            *rds.Client
+	elasticacheClient    *elasticache.Client
+	cloudwatchLogsClient *cloudwatchlogs.Client
 
 	errors     map[string]bool
 	errorsLock sync.RWMutex
@@ -43,21 +50,24 @@ type Discoverer struct {
 }
 
 func NewDiscoverer(cfg *config.AWSConfig, reg prometheus.Registerer) (*Discoverer, error) {
-	sess, err := newSession(cfg)
+	ctx := context.Background()
+	awsCfg, err := newAWSConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 	d := &Discoverer{
-		cfg:  cfg,
-		sess: sess,
-		reg:  reg,
-		stop: make(chan struct{}),
+		cfg:    cfg,
+		awsCfg: awsCfg,
+		ctx:    ctx,
+		reg:    reg,
+		stop:   make(chan struct{}),
 
 		errors: map[string]bool{},
 
 		rdsCollectors: map[string]*RDSCollector{},
 		ecCollectors:  map[string]*ECCollector{},
 	}
+	d.buildClients()
 
 	err = reg.Register(d)
 	if err != nil {
@@ -80,8 +90,22 @@ func NewDiscoverer(cfg *config.AWSConfig, reg prometheus.Registerer) (*Discovere
 	return d, nil
 }
 
-func (d *Discoverer) ClientConfig(serviceName string, cfgs ...*aws.Config) client.Config {
-	return d.sess.ClientConfig(serviceName, cfgs...)
+func (d *Discoverer) buildClients() {
+	d.rdsClient = rds.NewFromConfig(d.awsCfg)
+	d.elasticacheClient = elasticache.NewFromConfig(d.awsCfg)
+	d.cloudwatchLogsClient = cloudwatchlogs.NewFromConfig(d.awsCfg)
+}
+
+func (d *Discoverer) RDSClient() *rds.Client {
+	return d.rdsClient
+}
+
+func (d *Discoverer) ElastiCacheClient() *elasticache.Client {
+	return d.elasticacheClient
+}
+
+func (d *Discoverer) CloudWatchLogsClient() *cloudwatchlogs.Client {
+	return d.cloudwatchLogsClient
 }
 
 func (d *Discoverer) Stop() {
@@ -101,12 +125,13 @@ func (d *Discoverer) Update(cfg *config.AWSConfig) error {
 	if d.cfg.Equal(cfg) {
 		return nil
 	}
-	sess, err := newSession(cfg)
+	awsCfg, err := newAWSConfig(d.ctx, cfg)
 	if err != nil {
 		return err
 	}
 	d.cfg = cfg
-	d.sess = sess
+	d.awsCfg = awsCfg
+	d.buildClients()
 	return nil
 }
 
@@ -127,11 +152,10 @@ func (d *Discoverer) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (d *Discoverer) registerError(err error) {
-	var awsErr awserr.Error
-	ok := errors.As(err, &awsErr)
-	if ok {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
 		d.errorsLock.Lock()
-		d.errors[awsErr.Message()] = true
+		d.errors[apiErr.ErrorMessage()] = true
 		d.errorsLock.Unlock()
 	}
 }
@@ -145,11 +169,11 @@ func (d *Discoverer) discover() {
 }
 
 func (d *Discoverer) discoverRDS() {
-	svc := rds.New(d.sess)
-	input := &rds.DescribeDBInstancesInput{}
+	svc := d.rdsClient
 	seen := map[string]bool{}
-	for {
-		output, err := svc.DescribeDBInstances(input)
+	paginator := rds.NewDescribeDBInstancesPaginator(svc, &rds.DescribeDBInstancesInput{})
+	for paginator.HasMorePages() {
+		output, err := paginator.NextPage(d.ctx)
 		if err != nil {
 			klog.Error(err)
 			d.registerError(err)
@@ -157,7 +181,7 @@ func (d *Discoverer) discoverRDS() {
 		}
 		for _, instance := range output.DBInstances {
 			if filters := d.cfg.RDSTagFilters; len(filters) > 0 {
-				o, err := svc.ListTagsForResource(&rds.ListTagsForResourceInput{ResourceName: instance.DBInstanceArn})
+				o, err := svc.ListTagsForResource(d.ctx, &rds.ListTagsForResourceInput{ResourceName: instance.DBInstanceArn})
 				if err != nil {
 					klog.Error(err)
 					d.registerError(err)
@@ -165,30 +189,26 @@ func (d *Discoverer) discoverRDS() {
 				}
 				tags := map[string]string{}
 				for _, t := range o.TagList {
-					tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+					tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
 				}
 				if !tagsMatched(filters, tags) {
-					klog.Infof("RDS instance %s (tags: %s) was skipped according to the tag-based filters: %s", aws.StringValue(instance.DBInstanceIdentifier), tags, filters)
+					klog.Infof("RDS instance %s (tags: %s) was skipped according to the tag-based filters: %s", aws.ToString(instance.DBInstanceIdentifier), tags, filters)
 					continue
 				}
 			}
-			id := d.cfg.Region + "/" + aws.StringValue(instance.DBInstanceIdentifier)
+			id := d.cfg.Region + "/" + aws.ToString(instance.DBInstanceIdentifier)
 			seen[id] = true
 			if d.rdsCollectors[id] == nil {
 				klog.Infoln("new RDS instance found:", id)
-				c := NewRDSCollector(d, d.cfg.Region, instance)
+				c := NewRDSCollector(d, d.cfg.Region, &instance)
 				if err = prometheus.WrapRegistererWith(rdsLabels(id), d.reg).Register(c); err != nil {
 					klog.Error(err)
 					continue
 				}
 				d.rdsCollectors[id] = c
 			}
-			d.rdsCollectors[id].update(d.cfg.Region, instance)
+			d.rdsCollectors[id].update(d.cfg.Region, &instance)
 		}
-		if output.Marker == nil {
-			break
-		}
-		input.SetMarker(aws.StringValue(output.Marker))
 	}
 
 	for id, c := range d.rdsCollectors {
@@ -201,15 +221,16 @@ func (d *Discoverer) discoverRDS() {
 }
 
 func (d *Discoverer) discoverEC() {
-	svc := elasticache.New(d.sess)
+	svc := d.elasticacheClient
 	seen := map[string]bool{}
 	for _, v := range []bool{false, true} {
 		input := &elasticache.DescribeCacheClustersInput{
 			ShowCacheNodeInfo:                       aws.Bool(true),
 			ShowCacheClustersNotInReplicationGroups: aws.Bool(v),
 		}
-		for {
-			output, err := svc.DescribeCacheClusters(input)
+		paginator := elasticache.NewDescribeCacheClustersPaginator(svc, input)
+		for paginator.HasMorePages() {
+			output, err := paginator.NextPage(d.ctx)
 			if err != nil {
 				klog.Error(err)
 				d.registerError(err)
@@ -217,7 +238,7 @@ func (d *Discoverer) discoverEC() {
 			}
 			for _, cluster := range output.CacheClusters {
 				if filters := d.cfg.ElasticacheTagFilters; len(filters) > 0 {
-					o, err := svc.ListTagsForResource(&elasticache.ListTagsForResourceInput{ResourceName: cluster.ARN})
+					o, err := svc.ListTagsForResource(d.ctx, &elasticache.ListTagsForResourceInput{ResourceName: cluster.ARN})
 					if err != nil {
 						klog.Error(err)
 						d.registerError(err)
@@ -225,32 +246,28 @@ func (d *Discoverer) discoverEC() {
 					}
 					tags := map[string]string{}
 					for _, t := range o.TagList {
-						tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+						tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
 					}
 					if !tagsMatched(filters, tags) {
-						klog.Infof("EC cluster %s (tags: %s) was skipped according to the tag-based filters: %s", aws.StringValue(cluster.CacheClusterId), tags, filters)
+						klog.Infof("EC cluster %s (tags: %s) was skipped according to the tag-based filters: %s", aws.ToString(cluster.CacheClusterId), tags, filters)
 						continue
 					}
 				}
 				for _, node := range cluster.CacheNodes {
-					id := d.cfg.Region + "/" + aws.StringValue(cluster.CacheClusterId) + "/" + aws.StringValue(node.CacheNodeId)
+					id := d.cfg.Region + "/" + aws.ToString(cluster.CacheClusterId) + "/" + aws.ToString(node.CacheNodeId)
 					seen[id] = true
 					if d.ecCollectors[id] == nil {
 						klog.Infoln("new EC instance found:", id)
-						c := NewECCollector(d.cfg.Region, cluster, node)
+						c := NewECCollector(d.cfg.Region, &cluster, &node)
 						if err = prometheus.WrapRegistererWith(ecLabels(id), d.reg).Register(c); err != nil {
 							klog.Error(err)
 							continue
 						}
 						d.ecCollectors[id] = c
 					}
-					d.ecCollectors[id].update(d.cfg.Region, cluster, node)
+					d.ecCollectors[id].update(d.cfg.Region, &cluster, &node)
 				}
 			}
-			if output.Marker == nil {
-				break
-			}
-			input.SetMarker(aws.StringValue(output.Marker))
 		}
 	}
 
@@ -271,21 +288,20 @@ func ecLabels(id string) prometheus.Labels {
 	return prometheus.Labels{"ec_instance_id": id}
 }
 
-func newSession(cfg *config.AWSConfig) (*session.Session, error) {
-	creds := credentials.NewStaticCredentials(cfg.AccessKeyID, cfg.SecretAccessKey, "")
-	config := aws.NewConfig().WithRegion(cfg.Region).WithCredentials(creds)
-	config.Retryer = client.DefaultRetryer{
-		NumMaxRetries:    5,
-		MinRetryDelay:    500 * time.Millisecond,
-		MaxRetryDelay:    10 * time.Second,
-		MinThrottleDelay: 500 * time.Millisecond,
-		MaxThrottleDelay: 10 * time.Second,
-	}
-	sess, err := session.NewSession(config)
-	if err != nil {
-		return nil, err
-	}
-	return sess, nil
+func newAWSConfig(ctx context.Context, cfg *config.AWSConfig) (aws.Config, error) {
+	return awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(cfg.Region),
+		awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		),
+		awsconfig.WithRetryer(func() aws.Retryer {
+			return retry.NewStandard(func(o *retry.StandardOptions) {
+				o.MaxAttempts = 6
+				o.MaxBackoff = 10 * time.Second
+				o.Backoff = retry.NewExponentialJitterBackoff(10 * time.Second)
+			})
+		}),
+	)
 }
 
 func idWithRegion(region, id string) string {
