@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,8 @@ var (
 
 	dConnections = desc("pg_connections", "Number of database connections", "db", "user", "state", "wait_event_type", "query")
 
+	dAutovacuumWorkers = desc("pg_autovacuum_workers", "Number of running autovacuum worker processes")
+
 	dLatency = desc("pg_latency_seconds", "Query execution time", "summary")
 
 	dDbQueries = desc("pg_db_queries_per_second", "Number of queries executed in the database per second", "db")
@@ -45,9 +48,42 @@ var (
 	dWalReceiveLsn     = desc("pg_wal_receive_lsn", "WAL sequence number that has been received and synced to disk by streaming replication")
 	dWalReplyLsn       = desc("pg_wal_reply_lsn", "WAL sequence number that has been replayed during recovery")
 
+	dCheckpointsScheduled    = desc("pg_checkpoints_scheduled_total", "Number of scheduled checkpoints, including skipped ones", "type")
+	dCheckpoints             = desc("pg_checkpoints_total", "Number of checkpoints that have been completed")
+	dRestartpoints           = desc("pg_restartpoints_total", "Number of restartpoints that have been completed on a standby")
+	dBuffersWritten          = desc("pg_buffers_written_total", "Total number of dirty buffers flushed to disk", "source")
+	dTimeSinceLastCheckpoint = desc("pg_time_since_last_checkpoint_seconds", "Seconds since the last checkpoint observed by the agent")
+	dWalSinceLastCheckpoint  = desc("pg_wal_since_last_checkpoint_bytes", "Amount of WAL written since the last completed checkpoint (to be replayed in the case of a crash)")
+	dWalSize                 = desc("pg_wal_size_bytes", "Size of the WAL directory")
+	dReplicationSlotRetained = desc("pg_replication_slot_retained_wal_bytes", "Amount of WAL retained for the replication slot", "slot", "active", "wal_status")
+	dXidAge                  = desc("pg_xid_age", "Transactions since the oldest unfrozen transaction ID (age of datfrozenxid)", "db")
+	dMultixactAge            = desc("pg_multixact_age", "Multixacts since the oldest unfrozen multixact ID (age of datminmxid)", "db")
+	dOldestXminAge           = desc("pg_oldest_xmin_age", "Age, in transactions, of the oldest transaction ID held back from freezing, by holder", "holder")
+	dWalArchivedSegments     = desc("pg_wal_archived_segments_total", "Number of WAL files successfully archived")
+	dWalArchiveFailures      = desc("pg_wal_archive_failures_total", "Number of failed attempts to archive WAL files")
+	dWalArchivingStatus      = desc("pg_wal_archiving_status", "1 if the last WAL archive attempt succeeded, 0 if it failed")
+
 	dDbSize          = desc("pg_database_size_bytes", "Total size of the database in bytes", "db")
 	dTableSize       = desc("pg_table_size_bytes", "Total size of the table in bytes including indexes and TOAST", "db", "schema", "table")
 	dTableSizeGrowth = desc("pg_table_size_growth_bytes_per_second", "Table size growth rate in bytes per second", "db", "schema", "table")
+
+	dDbTableBloat = desc("pg_db_table_bloat_bytes", "Estimated wasted space across all tables of the database", "db")
+	dDbIndexBloat = desc("pg_db_index_bloat_bytes", "Estimated wasted space across all indexes of the database", "db")
+	dTableBloat   = desc("pg_table_bloat_bytes", "Estimated wasted space in the table heap", "db", "schema", "table")
+	dIndexBloat   = desc("pg_index_bloat_bytes", "Estimated wasted space in the index", "db", "schema", "table", "index")
+
+	dTableDeadTupleBytes = desc("pg_table_dead_tuple_bytes", "Estimated size of dead tuples not yet reclaimed by vacuum", "db", "schema", "table")
+	dTableDeadTuples     = desc("pg_table_dead_tuples", "Number of dead tuples not yet reclaimed by vacuum", "db", "schema", "table")
+	dTableLiveTuples     = desc("pg_table_live_tuples", "Estimated number of live tuples", "db", "schema", "table")
+
+	dTableSecondsSinceAutovacuum = desc("pg_table_seconds_since_last_autovacuum", "Seconds since the last autovacuum of the table", "db", "schema", "table")
+	dTableVacuumInProgress       = desc("pg_table_vacuum_in_progress", "1 if a vacuum is currently running on the table; not reported otherwise", "db", "schema", "table")
+	dTableVacuumThrottled        = desc("pg_table_vacuum_throttled", "1 if the running vacuum is sleeping on the cost-based delay (VacuumDelay) at scrape time, 0 otherwise; reported only while a vacuum is in progress", "db", "schema", "table")
+
+	dTableModsSinceAnalyze    = desc("pg_table_mods_since_analyze", "Rows modified (inserted/updated/deleted) since the table's statistics were last analyzed", "db", "schema", "table")
+	dTableReltuples           = desc("pg_table_reltuples", "Planner's estimate of the number of live rows in the table (pg_class.reltuples)", "db", "schema", "table")
+	dTableSecondsSinceAnalyze = desc("pg_table_seconds_since_last_analyze", "Seconds since the table's planner statistics were last refreshed (ANALYZE or autoanalyze)", "db", "schema", "table")
+	dTableSetting             = desc("pg_table_setting", "Per-table autovacuum/autoanalyze reloption overrides carried as labels (empty = not overridden); reported only for monitored tables that override a setting", "db", "schema", "table", "autovacuum_disabled", "autovacuum_vacuum_scale_factor", "autovacuum_vacuum_threshold", "autovacuum_vacuum_cost_delay", "autovacuum_vacuum_cost_limit", "autovacuum_analyze_scale_factor", "autovacuum_analyze_threshold")
 )
 
 type QueryKey struct {
@@ -89,7 +125,25 @@ type Collector struct {
 	saPrev            *saSnapshot
 	settings          []Setting
 	replicationStatus *replicationStatus
-	scrapeErrors      map[string]bool
+
+	cpPrev           *checkpointStats
+	cpTimed          float64
+	cpRequested      float64
+	cpDone           float64
+	cpRestartsDone   float64
+	cpBuffers        float64
+	cpWalBytes       sql.Null[float64]
+	lastCheckpointAt time.Time
+
+	walSize          sql.Null[float64]
+	replicationSlots []replicationSlot
+	archPrev         *archiverStats
+	archStats        *archiverStats
+	archArchived     float64
+	archFailed       float64
+	wraparound       *wraparoundStats
+
+	scrapeErrors map[string]bool
 
 	dbTracker        *databaseTracker
 	emitter          dbtracker.ChangeEmitter
@@ -100,7 +154,7 @@ type Collector struct {
 	logger logger.Logger
 }
 
-func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter dbtracker.ChangeEmitter, targetAddr string, maxTablesPerDB int, trackSizes bool, excludeDatabases []string) (*Collector, error) {
+func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter dbtracker.ChangeEmitter, targetAddr string, maxTablesPerDB int, trackSizes, trackBloat bool, excludeDatabases []string) (*Collector, error) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
 		ctx:            ctx,
@@ -119,8 +173,8 @@ func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger
 	}
 	c.db.SetMaxOpenConns(1)
 	trackSchema := c.emitter != nil
-	if trackSchema || trackSizes {
-		c.dbTracker = newDatabaseTracker(c.db, dsn, maxTablesPerDB, trackSchema, trackSizes, excludeDatabases, logger)
+	if trackSchema || trackSizes || trackBloat {
+		c.dbTracker = newDatabaseTracker(c.db, dsn, maxTablesPerDB, trackSchema, trackSizes, trackBloat, excludeDatabases, logger)
 	}
 	pingCtx, pingCancelFunc := context.WithTimeout(ctx, collectTimeout)
 	defer pingCancelFunc()
@@ -178,6 +232,21 @@ func (c *Collector) snapshot() {
 	}
 
 	if c.replicationStatus, err = c.getReplicationStatus(ctx, version); err != nil {
+		c.scrapeErrors[err.Error()] = true
+		c.logger.Warning(err)
+	}
+
+	if err = c.getCheckpointStats(ctx, version); err != nil {
+		c.scrapeErrors[err.Error()] = true
+		c.logger.Warning(err)
+	}
+
+	if err = c.getWalStats(ctx, version); err != nil {
+		c.scrapeErrors[err.Error()] = true
+		c.logger.Warning(err)
+	}
+
+	if err = c.getWraparoundStats(ctx, version); err != nil {
 		c.scrapeErrors[err.Error()] = true
 		c.logger.Warning(err)
 	}
@@ -294,6 +363,7 @@ func (c *Collector) connectionMetrics(ch chan<- prometheus.Metric) {
 	for k, count := range connectionsByKey {
 		ch <- gauge(dConnections, count, k.DB, k.User, k.State, k.WaitEventType, k.Query)
 	}
+	ch <- gauge(dAutovacuumWorkers, c.saCurr.autovacuumWorkers)
 
 	awaitingQueriesByBlockingQuery := map[QueryKey]float64{}
 	for blockingPid, awaitingQueries := range awaitingQueriesByBlockingPid {
@@ -337,17 +407,66 @@ func (c *Collector) queryMetrics(ch chan<- prometheus.Metric) {
 }
 
 func (c *Collector) tableSizeMetrics(ch chan<- prometheus.Metric) {
-	if c.dbTracker == nil || !c.dbTracker.trackSizes {
+	if c.dbTracker == nil {
 		return
 	}
-	for dbName, snap := range c.dbTracker.DBSizes {
-		ch <- gauge(dDbSize, snap.DatabaseSize, dbName)
-		for _, t := range snap.Tables {
-			ch <- gauge(dTableSize, t.Size, dbName, t.Schema, t.Table)
+	if c.dbTracker.trackSizes {
+		for dbName, snap := range c.dbTracker.DBSizes {
+			ch <- gauge(dDbSize, snap.DatabaseSize, dbName)
+			for _, t := range snap.Tables {
+				ch <- gauge(dTableSize, t.Size, dbName, t.Schema, t.Table)
+			}
+		}
+		for _, g := range c.dbTracker.TableGrowth {
+			ch <- gauge(dTableSizeGrowth, g.Growth, g.DB, g.Schema, g.Table)
 		}
 	}
-	for _, g := range c.dbTracker.TableGrowth {
-		ch <- gauge(dTableSizeGrowth, g.Growth, g.DB, g.Schema, g.Table)
+	for dbName, b := range c.dbTracker.bloat {
+		ch <- gauge(dDbTableBloat, b.TableTotal, dbName)
+		ch <- gauge(dDbIndexBloat, b.IndexTotal, dbName)
+		for _, t := range b.TopTables {
+			ch <- gauge(dTableBloat, t.Bytes, dbName, t.Schema, t.Table)
+		}
+		for _, ix := range b.TopIndexes {
+			ch <- gauge(dIndexBloat, ix.Bytes, dbName, ix.Schema, ix.Table, ix.Index)
+		}
+	}
+	for dbName, entries := range c.dbTracker.tableStats {
+		for _, e := range entries {
+			ch <- gauge(dTableReltuples, e.Reltuples, dbName, e.Schema, e.Table)
+			if e.DeadBytes > 0 {
+				ch <- gauge(dTableDeadTupleBytes, e.DeadBytes, dbName, e.Schema, e.Table)
+				ch <- gauge(dTableDeadTuples, e.DeadTuples, dbName, e.Schema, e.Table)
+				ch <- gauge(dTableLiveTuples, e.LiveTuples, dbName, e.Schema, e.Table)
+			}
+			if e.AutovacuumAge.Valid {
+				ch <- gauge(dTableSecondsSinceAutovacuum, e.AutovacuumAge.Float64, dbName, e.Schema, e.Table)
+			}
+			if e.ModsSinceAnalyze > 0 {
+				ch <- gauge(dTableModsSinceAnalyze, e.ModsSinceAnalyze, dbName, e.Schema, e.Table)
+			}
+			if e.AnalyzeAge.Valid {
+				ch <- gauge(dTableSecondsSinceAnalyze, e.AnalyzeAge.Float64, dbName, e.Schema, e.Table)
+			}
+			if e.Reloptions.Valid && e.Reloptions.String != "" {
+				if s := parseTableSettings(e.Reloptions.String); len(s) > 0 {
+					ch <- gauge(dTableSetting, 1, dbName, e.Schema, e.Table,
+						s["autovacuum_disabled"], s["autovacuum_vacuum_scale_factor"], s["autovacuum_vacuum_threshold"],
+						s["autovacuum_vacuum_cost_delay"], s["autovacuum_vacuum_cost_limit"],
+						s["autovacuum_analyze_scale_factor"], s["autovacuum_analyze_threshold"])
+				}
+			}
+		}
+	}
+	for dbName, entries := range c.dbTracker.vacuumProgress {
+		for _, v := range entries {
+			ch <- gauge(dTableVacuumInProgress, 1, dbName, v.Schema, v.Table)
+			throttled := 0.0
+			if v.Throttled {
+				throttled = 1
+			}
+			ch <- gauge(dTableVacuumThrottled, throttled, dbName, v.Schema, v.Table)
+		}
 	}
 }
 
@@ -417,6 +536,49 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			}
 		}
 	}
+
+	ch <- counter(dCheckpointsScheduled, c.cpTimed, "timed")
+	ch <- counter(dCheckpointsScheduled, c.cpRequested, "requested")
+	ch <- counter(dCheckpoints, c.cpDone)
+	ch <- counter(dRestartpoints, c.cpRestartsDone)
+	ch <- counter(dBuffersWritten, c.cpBuffers, "checkpointer")
+	if c.cpWalBytes.Valid {
+		ch <- gauge(dWalSinceLastCheckpoint, c.cpWalBytes.V)
+	}
+	if c.walSize.Valid {
+		ch <- gauge(dWalSize, c.walSize.V)
+	}
+	for _, s := range c.replicationSlots {
+		if s.retained.Valid {
+			ch <- gauge(dReplicationSlotRetained, s.retained.V, s.name, strconv.FormatBool(s.active), s.walStatus)
+		}
+	}
+	ch <- counter(dWalArchivedSegments, c.archArchived)
+	ch <- counter(dWalArchiveFailures, c.archFailed)
+	if w := c.wraparound; w != nil {
+		for db, v := range w.xidAge {
+			ch <- gauge(dXidAge, v, db)
+		}
+		for db, v := range w.multixactAge {
+			ch <- gauge(dMultixactAge, v, db)
+		}
+		for holder, v := range w.xminAgeByHolder {
+			ch <- gauge(dOldestXminAge, v, holder)
+		}
+	}
+	if a := c.archStats; a != nil {
+		if a.lastArchived.Valid || a.lastFailed.Valid {
+			failing := a.lastFailed.Valid && (!a.lastArchived.Valid || a.lastFailed.V.After(a.lastArchived.V))
+			status := 1.0
+			if failing {
+				status = 0.0
+			}
+			ch <- gauge(dWalArchivingStatus, status)
+		}
+	}
+	if !c.lastCheckpointAt.IsZero() {
+		ch <- gauge(dTimeSinceLastCheckpoint, time.Since(c.lastCheckpointAt).Seconds())
+	}
 }
 
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
@@ -425,6 +587,9 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dScrapeError
 	ch <- dInfo
 	ch <- dConnections
+	ch <- dAutovacuumWorkers
+	ch <- dTableVacuumInProgress
+	ch <- dTableVacuumThrottled
 	ch <- dLatency
 	ch <- dLockAwaitingQueries
 	ch <- dSettings
@@ -437,9 +602,35 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dWalCurrentLsn
 	ch <- dWalReceiveLsn
 	ch <- dWalReplyLsn
+	ch <- dCheckpointsScheduled
+	ch <- dCheckpoints
+	ch <- dRestartpoints
+	ch <- dBuffersWritten
+	ch <- dTimeSinceLastCheckpoint
+	ch <- dWalSinceLastCheckpoint
+	ch <- dWalSize
+	ch <- dReplicationSlotRetained
+	ch <- dWalArchivedSegments
+	ch <- dWalArchiveFailures
+	ch <- dXidAge
+	ch <- dMultixactAge
+	ch <- dOldestXminAge
+	ch <- dWalArchivingStatus
 	ch <- dDbSize
 	ch <- dTableSize
 	ch <- dTableSizeGrowth
+	ch <- dDbTableBloat
+	ch <- dDbIndexBloat
+	ch <- dTableBloat
+	ch <- dIndexBloat
+	ch <- dTableDeadTupleBytes
+	ch <- dTableDeadTuples
+	ch <- dTableLiveTuples
+	ch <- dTableSecondsSinceAutovacuum
+	ch <- dTableModsSinceAnalyze
+	ch <- dTableReltuples
+	ch <- dTableSecondsSinceAnalyze
+	ch <- dTableSetting
 }
 
 func desc(name, help string, labels ...string) *prometheus.Desc {

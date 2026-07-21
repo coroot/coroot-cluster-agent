@@ -31,8 +31,9 @@ func (c Connection) QueryKey() QueryKey {
 }
 
 type saSnapshot struct {
-	ts          time.Time
-	connections map[int]Connection
+	ts                time.Time
+	connections       map[int]Connection
+	autovacuumWorkers float64
 }
 
 func (c *Collector) getPgStatActivity(ctx context.Context, version semver.Version, querySizeLimit int) (*saSnapshot, error) {
@@ -68,6 +69,9 @@ func (c *Collector) getPgStatActivity(ctx context.Context, version semver.Versio
 		if err != nil {
 			c.logger.Warning("failed to scan pg_stat_activity row:", err)
 			continue
+		}
+		if conn.BackendType.String == "autovacuum worker" {
+			snapshot.autovacuumWorkers++
 		}
 		if conn.DB.String == "" || conn.User.String == "" || conn.State.String == "" {
 			continue
