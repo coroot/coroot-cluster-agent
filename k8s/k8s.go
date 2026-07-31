@@ -90,6 +90,8 @@ func (k8s *K8S) start() {
 
 	if !*flags.CollectKubernetesEvents {
 		klog.Infoln("events collector disabled")
+	} else if eventsLogger, err := NewEventsLogger(); err != nil {
+		klog.Errorln("failed to create events logger, events collection disabled:", err)
 	} else {
 		events := factory.Core().V1().Events().Informer()
 		events.SetWatchErrorHandler(func(r *cache.Reflector, err error) {
@@ -99,7 +101,6 @@ func (k8s *K8S) start() {
 			}
 			cache.DefaultWatchErrorHandler(context.TODO(), r, err)
 		})
-		eventsLogger := NewEventsLogger()
 		startTime := metav1.Now()
 		events.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
