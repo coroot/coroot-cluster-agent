@@ -178,7 +178,7 @@ type indexInfo struct {
 
 func queryTableSizes(ctx context.Context, db *sql.DB, dbName string) ([]dbtracker.TableSizeEntry, error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT n.nspname, c.relname, pg_total_relation_size(c.oid)
+SELECT n.nspname, c.relname, COALESCE(pg_total_relation_size(c.oid), 0)
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind = 'r'
