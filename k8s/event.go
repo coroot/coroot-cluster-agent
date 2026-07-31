@@ -18,13 +18,18 @@ type EventsLogger struct {
 	logger log.Logger
 }
 
-func NewEventsLogger() *EventsLogger {
+func NewEventsLogger() (*EventsLogger, error) {
 	opts := []otlploghttp.Option{
 		otlploghttp.WithEndpointURL((*flags.CorootURL).JoinPath("/v1/logs").String()),
 		otlploghttp.WithHeaders(common.AuthHeaders(*flags.APIKey)),
-		otlploghttp.WithTLSClientConfig(common.TlsConfig()),
 	}
-	exporter, _ := otlploghttp.New(context.Background(), opts...)
+	if (*flags.CorootURL).Scheme == "https" {
+		opts = append(opts, otlploghttp.WithTLSClientConfig(common.TlsConfig()))
+	}
+	exporter, err := otlploghttp.New(context.Background(), opts...)
+	if err != nil {
+		return nil, err
+	}
 	batcher := sdk.NewBatchProcessor(exporter)
 	provider := sdk.NewLoggerProvider(
 		sdk.WithProcessor(batcher),
@@ -32,7 +37,7 @@ func NewEventsLogger() *EventsLogger {
 			semconv.ServiceName("KubernetesEvents"),
 		)),
 	)
-	return &EventsLogger{logger: provider.Logger("coroot-cluster-agent")}
+	return &EventsLogger{logger: provider.Logger("coroot-cluster-agent")}, nil
 }
 
 func (l *EventsLogger) EmitEvent(event *corev1.Event) {

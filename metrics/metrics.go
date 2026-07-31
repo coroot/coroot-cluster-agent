@@ -75,7 +75,10 @@ func NewMetrics(k8s *k8s.K8S) (*Metrics, error) {
 	}
 
 	if *flags.TrackDatabaseChanges {
-		ms.changeEmitter = emitter.NewChangeEmitter()
+		ms.changeEmitter, err = emitter.NewChangeEmitter()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	klog.Infof("endpoint: %s, scrape interval: %s", ms.endpoint, ms.scrapeInterval)

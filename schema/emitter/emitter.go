@@ -18,13 +18,18 @@ type ChangeEmitter struct {
 	logger log.Logger
 }
 
-func NewChangeEmitter() *ChangeEmitter {
+func NewChangeEmitter() (*ChangeEmitter, error) {
 	opts := []otlploghttp.Option{
 		otlploghttp.WithEndpointURL((*flags.CorootURL).JoinPath("/v1/logs").String()),
 		otlploghttp.WithHeaders(common.AuthHeaders(*flags.APIKey)),
-		otlploghttp.WithTLSClientConfig(common.TlsConfig()),
 	}
-	exporter, _ := otlploghttp.New(context.Background(), opts...)
+	if (*flags.CorootURL).Scheme == "https" {
+		opts = append(opts, otlploghttp.WithTLSClientConfig(common.TlsConfig()))
+	}
+	exporter, err := otlploghttp.New(context.Background(), opts...)
+	if err != nil {
+		return nil, err
+	}
 	batcher := sdk.NewBatchProcessor(exporter)
 	provider := sdk.NewLoggerProvider(
 		sdk.WithProcessor(batcher),
@@ -32,7 +37,7 @@ func NewChangeEmitter() *ChangeEmitter {
 			semconv.ServiceName("DatabaseChanges"),
 		)),
 	)
-	return &ChangeEmitter{logger: provider.Logger("coroot-cluster-agent")}
+	return &ChangeEmitter{logger: provider.Logger("coroot-cluster-agent")}, nil
 }
 
 func (e *ChangeEmitter) Emit(change schema.Change, dbSystem, targetAddr string) {
