@@ -33,7 +33,7 @@ func collectTableStats(ctx context.Context, db *sql.DB, log logger.Logger) []tab
 		SELECT s.schemaname, s.relname,
 			s.n_dead_tup,
 			s.n_live_tup,
-			(s.n_dead_tup::float8 / NULLIF(s.n_live_tup + s.n_dead_tup, 0) * pg_relation_size(s.relid))::bigint,
+			COALESCE((s.n_dead_tup::float8 / NULLIF(s.n_live_tup + s.n_dead_tup, 0) * pg_relation_size(s.relid))::bigint, 0),
 			EXTRACT(EPOCH FROM now() - s.last_autovacuum),
 			s.n_mod_since_analyze,
 			c.reltuples,
