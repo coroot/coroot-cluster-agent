@@ -2,6 +2,7 @@ package ksm
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
@@ -12,8 +13,11 @@ import (
 	"k8s.io/kube-state-metrics/v2/pkg/options"
 )
 
+const RetryInterval = 10 * time.Second
+
 type KSM struct {
 	opts *options.Options
+	ctx  context.Context
 	stop context.CancelFunc
 }
 
@@ -66,16 +70,25 @@ func NewKSM(listenAddr string, minAge time.Duration) (*KSM, error) {
 		CustomResourceConfig: customResourceConfig(),
 	}
 
-	return &KSM{opts: opts}, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	return &KSM{opts: opts, ctx: ctx, stop: cancel}, nil
 }
 
 func (ksm *KSM) Start() {
-	ctx, cancel := context.WithCancel(context.Background())
-	ksm.stop = cancel
-	err := app.RunKubeStateMetrics(ctx, ksm.opts)
-	if err != nil {
-		klog.Errorln(err)
-		cancel()
+	for {
+		err := app.RunKubeStateMetrics(ksm.ctx, ksm.opts)
+		if ksm.ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			err = fmt.Errorf("exited unexpectedly")
+		}
+		klog.Errorf("kube-state-metrics failed: %s, retrying in %s", err, RetryInterval)
+		select {
+		case <-ksm.ctx.Done():
+			return
+		case <-time.After(RetryInterval):
+		}
 	}
 }
 
