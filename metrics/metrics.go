@@ -247,11 +247,15 @@ func (ms *Metrics) discoverFromPods() {
 		switch e.Type {
 		case k8s.PodEventTypeAdd, k8s.PodEventTypeChange:
 			target := TargetFromPod(e.Pod)
+			old := TargetFromPod(e.Old)
 			if target == nil {
-				if t := TargetFromPod(e.Old); t != nil {
-					ms.delTarget(t)
+				if old != nil {
+					ms.delTarget(old)
 				}
 				continue
+			}
+			if old != nil && old.Addr != target.Addr { // e.g. the pod IP has changed
+				ms.delTarget(old)
 			}
 			ms.targetsLock.Lock()
 			t := ms.targets[target.Addr]
