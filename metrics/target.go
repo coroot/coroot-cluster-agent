@@ -210,7 +210,7 @@ func TargetFromConfig(i config.ApplicationInstrumentation) *Target {
 }
 
 func TargetFromPod(pod *k8s.Pod) *Target {
-	if pod == nil || pod.Annotations == nil {
+	if pod == nil || pod.Annotations == nil || pod.IP == "" {
 		return nil
 	}
 
