@@ -18,6 +18,9 @@ var (
 )
 
 func Sql(query string) string {
+	if query == "" {
+		return ""
+	}
 	query = strings.ToLower(query)
 	query = removeCommentsAndStrings(query)
 	query = reWhitespace.ReplaceAllString(query, " ")
