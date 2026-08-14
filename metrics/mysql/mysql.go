@@ -33,6 +33,9 @@ var (
 	dQueryTotalTime = common.Desc("mysql_top_query_time_per_second", "", "schema", "query")
 	dQueryLockTime  = common.Desc("mysql_top_query_lock_time_per_second", "", "schema", "query")
 
+	dLockedQueries       = common.Desc("mysql_locked_queries", "Number of queries currently waiting for a lock", "schema", "query")
+	dLockAwaitingQueries = common.Desc("mysql_lock_awaiting_queries", "Number of queries currently awaiting a lock, by the blocking query", "schema", "blocking_query")
+
 	dReplicationIORunning  = common.Desc("mysql_replication_io_status", "", "source_server_id", "source_server_uuid", "state", "last_error")
 	dReplicationSQLRunning = common.Desc("mysql_replication_sql_status", "", "source_server_id", "source_server_uuid", "state", "last_error")
 	dReplicationLag        = common.Desc("mysql_replication_lag_seconds", "", "source_server_id", "source_server_uuid")
@@ -73,6 +76,7 @@ type Collector struct {
 	globalStatus    map[string]string
 	perfschemaPrev  *statementsSummarySnapshot
 	perfschemaCurr  *statementsSummarySnapshot
+	lockWaits       *lockWaits
 	replicaStatuses []*ReplicaStatus
 	ioByTablePrev   *ioByTableSnapshot
 	ioByTableCurr   *ioByTableSnapshot
@@ -167,6 +171,14 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 	c.queryMetrics(ch, 20)
 	c.ioMetrics(ch, 20)
+	if c.lockWaits != nil {
+		for _, q := range c.lockWaits.locked {
+			ch <- common.Gauge(dLockedQueries, q.count, q.schema, q.query)
+		}
+		for _, q := range c.lockWaits.awaiting {
+			ch <- common.Gauge(dLockAwaitingQueries, q.count, q.schema, q.query)
+		}
+	}
 	c.replicationMetrics(ch)
 	c.tableSizeMetrics(ch)
 	metricFromVariable(ch, dConnectionsMax, "max_connections", prometheus.GaugeValue, c.globalVariables)
@@ -227,6 +239,8 @@ func (c *Collector) snapshot() {
 		return
 	}
 
+	c.lockWaitsSnapshot(ctx)
+
 	if c.emitter != nil {
 		c.trackSettingsChanges(ctx)
 	}
@@ -242,6 +256,8 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dQueryCalls
 	ch <- dQueryTotalTime
 	ch <- dQueryLockTime
+	ch <- dLockedQueries
+	ch <- dLockAwaitingQueries
 	ch <- dReplicationIORunning
 	ch <- dReplicationSQLRunning
 	ch <- dReplicationLag
