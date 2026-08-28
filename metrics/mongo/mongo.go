@@ -141,7 +141,7 @@ type Collector struct {
 	prevSettingsText string
 }
 
-func New(host, username, password string, tlsCreds common.TLSCredentials, params map[string]string, scrapeInterval, collectTimeout time.Duration,
+func New(host, username, password, sni string, tlsCreds common.TLSCredentials, params map[string]string, scrapeInterval, collectTimeout time.Duration,
 	logger logger.Logger, emitter dbtracker.ChangeEmitter, targetAddr string,
 	maxTablesPerDB int, trackSizes bool) *Collector {
 
@@ -182,6 +182,9 @@ func New(host, username, password string, tlsCreds common.TLSCredentials, params
 		if cfg, err := common.DatabaseTLSConfig(tlsCreds, params["tls"] == "skip-verify"); err != nil {
 			logger.Error("invalid TLS configuration:", err)
 		} else {
+			if sni != "" {
+				cfg.ServerName = sni
+			}
 			c.clientOpts.SetTLSConfig(cfg)
 		}
 	}
