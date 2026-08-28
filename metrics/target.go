@@ -208,7 +208,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		t.stop = func() {}
 
 	case TargetTypeMongodb:
-		collector := mongo.New(
+		collector, err := mongo.New(
 			t.Addr,
 			credentials.Username,
 			credentials.Password,
@@ -223,6 +223,9 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			maxTablesPerDB,
 			trackSizes,
 		)
+		if err != nil {
+			return err
+		}
 		t.coll = collector
 		t.stop = func() { _ = collector.Close() }
 
