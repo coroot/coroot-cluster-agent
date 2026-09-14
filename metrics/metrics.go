@@ -1,7 +1,10 @@
 package metrics
 
 import (
+	"context"
 	"errors"
+	"net"
+	"sort"
 
 	"net/http"
 	"net/url"
@@ -42,13 +45,14 @@ type Metrics struct {
 
 	aws          *aws.Discoverer
 	k8s          *k8s.K8S
+	static       *config.Static
 	k8sPodEvents <-chan k8s.PodEvent
 	ksm          *ksm.KSM
 
 	changeEmitter *emitter.ChangeEmitter
 }
 
-func NewMetrics(k8s *k8s.K8S) (*Metrics, error) {
+func NewMetrics(k8s *k8s.K8S, static *config.Static) (*Metrics, error) {
 	if *flags.MetricsScrapeInterval == 0 {
 		klog.Infoln("scrape interval is not set, disabling the scraper")
 		return nil, nil
@@ -64,6 +68,7 @@ func NewMetrics(k8s *k8s.K8S) (*Metrics, error) {
 		reg:            prometheus.NewRegistry(),
 		targets:        map[string]*Target{},
 		k8s:            k8s,
+		static:         static,
 	}
 
 	var err error
@@ -106,8 +111,15 @@ func (ms *Metrics) Stop() {
 func (ms *Metrics) ListenConfigUpdates(updates <-chan config.Config) {
 	go func() {
 		for cfg := range updates {
+			instrumentation := cfg.ApplicationInstrumentation
+			if ms.static != nil && ms.static.AWS != nil {
+				cfg.AWSConfig = ms.static.AWS
+			}
 			ms.updateAWS(cfg.AWSConfig)
-			ms.discoverFromConfig(cfg.ApplicationInstrumentation)
+			if ms.static != nil {
+				instrumentation = append(instrumentation, ms.resolveDatabases(ms.static.Databases)...)
+			}
+			ms.discoverFromConfig(instrumentation)
 		}
 	}()
 }
@@ -319,6 +331,79 @@ func (ms *Metrics) discoverFromPods() {
 			ms.delTarget(target)
 		}
 	}
+}
+
+func (ms *Metrics) resolveDatabases(databases []config.Database) []config.ApplicationInstrumentation {
+	var res []config.ApplicationInstrumentation
+	for _, d := range databases {
+		var endpoints []aws.Endpoint
+		var description string
+		switch {
+		case d.RDS != "":
+			description = "rds:" + d.RDS
+			if ms.aws == nil {
+				klog.Warningf("%s: the AWS integration is not configured, skipping", description)
+				continue
+			}
+			e, ok := ms.aws.RDSEndpoint(d.RDS)
+			if !ok {
+				klog.Warningf("%s: the RDS instance is not discovered (yet), skipping", description)
+				continue
+			}
+			endpoints = []aws.Endpoint{e}
+		case d.Elasticache != "":
+			description = "elasticache:" + d.Elasticache
+			if ms.aws == nil {
+				klog.Warningf("%s: the AWS integration is not configured, skipping", description)
+				continue
+			}
+			endpoints = ms.aws.ElastiCacheEndpoints(d.Elasticache)
+			if len(endpoints) == 0 {
+				klog.Warningf("%s: the ElastiCache cluster is not discovered (yet), skipping", description)
+				continue
+			}
+		default:
+			description = d.Host
+			endpoints = []aws.Endpoint{{Host: d.Host, Port: d.Port}}
+		}
+		if d.Port != "" {
+			for i := range endpoints {
+				endpoints[i].Port = d.Port
+			}
+		}
+		for _, e := range endpoints {
+			for _, ip := range resolveHost(e.Host) {
+				res = append(res, config.ApplicationInstrumentation{
+					Type:        d.Type,
+					Host:        ip,
+					Port:        e.Port,
+					Credentials: d.Credentials,
+					Params:      d.Params,
+					Instance:    description,
+				})
+			}
+		}
+	}
+	return res
+}
+
+func resolveHost(host string) []string {
+	if ip := net.ParseIP(host); ip != nil {
+		return []string{host}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		klog.Warningf("failed to resolve %s: %s", host, err)
+		return nil
+	}
+	ips := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		ips = append(ips, a.IP.String())
+	}
+	sort.Strings(ips)
+	return ips
 }
 
 func (ms *Metrics) discoverFromConfig(instrumentation []config.ApplicationInstrumentation) {
