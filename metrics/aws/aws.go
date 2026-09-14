@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,13 +14,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/elasticache"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/coroot-cluster-agent/config"
+	"github.com/coroot/coroot-cluster-agent/k8s"
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/exp/maps"
 	"k8s.io/klog"
 )
 
@@ -33,6 +38,8 @@ var (
 
 type Discoverer struct {
 	cfg    *config.AWSConfig
+	k8s    *k8s.K8S
+	region string
 	awsCfg aws.Config
 	ctx    context.Context
 	reg    prometheus.Registerer
@@ -42,21 +49,25 @@ type Discoverer struct {
 	elasticacheClient    *elasticache.Client
 	cloudwatchLogsClient *cloudwatchlogs.Client
 
-	errors     map[string]bool
-	errorsLock sync.RWMutex
+	errors          map[string]bool
+	errorsLock      sync.RWMutex
+	lastSummary     string
+	identityPending bool
 
 	rdsCollectors map[string]*RDSCollector
 	ecCollectors  map[string]*ECCollector
 }
 
-func NewDiscoverer(cfg *config.AWSConfig, reg prometheus.Registerer) (*Discoverer, error) {
+func NewDiscoverer(cfg *config.AWSConfig, k8s *k8s.K8S, reg prometheus.Registerer) (*Discoverer, error) {
 	ctx := context.Background()
-	awsCfg, err := newAWSConfig(ctx, cfg)
+	awsCfg, err := newAWSConfig(ctx, cfg, k8s)
 	if err != nil {
 		return nil, err
 	}
 	d := &Discoverer{
 		cfg:    cfg,
+		k8s:    k8s,
+		region: awsCfg.Region,
 		awsCfg: awsCfg,
 		ctx:    ctx,
 		reg:    reg,
@@ -91,6 +102,7 @@ func NewDiscoverer(cfg *config.AWSConfig, reg prometheus.Registerer) (*Discovere
 }
 
 func (d *Discoverer) buildClients() {
+	d.identityPending = !logIdentity(d.ctx, d.awsCfg)
 	d.rdsClient = rds.NewFromConfig(d.awsCfg)
 	d.elasticacheClient = elasticache.NewFromConfig(d.awsCfg)
 	d.cloudwatchLogsClient = cloudwatchlogs.NewFromConfig(d.awsCfg)
@@ -125,12 +137,13 @@ func (d *Discoverer) Update(cfg *config.AWSConfig) error {
 	if d.cfg.Equal(cfg) {
 		return nil
 	}
-	awsCfg, err := newAWSConfig(d.ctx, cfg)
+	awsCfg, err := newAWSConfig(d.ctx, cfg, d.k8s)
 	if err != nil {
 		return err
 	}
 	d.cfg = cfg
 	d.awsCfg = awsCfg
+	d.region = awsCfg.Region
 	d.buildClients()
 	return nil
 }
@@ -164,8 +177,23 @@ func (d *Discoverer) discover() {
 	d.errorsLock.Lock()
 	d.errors = map[string]bool{}
 	d.errorsLock.Unlock()
+	if d.identityPending {
+		d.identityPending = !logIdentity(d.ctx, d.awsCfg)
+	}
 	d.discoverRDS()
 	d.discoverEC()
+
+	d.errorsLock.RLock()
+	errs := maps.Keys(d.errors)
+	d.errorsLock.RUnlock()
+	summary := fmt.Sprintf("AWS discovery (region=%s): %d RDS instances, %d ElastiCache nodes", d.region, len(d.rdsCollectors), len(d.ecCollectors))
+	switch {
+	case len(errs) > 0:
+		klog.Errorf("%s, errors: %s", summary, strings.Join(errs, "; "))
+	case summary != d.lastSummary:
+		klog.Infoln(summary)
+	}
+	d.lastSummary = summary
 }
 
 func (d *Discoverer) discoverRDS() {
@@ -196,18 +224,18 @@ func (d *Discoverer) discoverRDS() {
 					continue
 				}
 			}
-			id := d.cfg.Region + "/" + aws.ToString(instance.DBInstanceIdentifier)
+			id := d.region + "/" + aws.ToString(instance.DBInstanceIdentifier)
 			seen[id] = true
 			if d.rdsCollectors[id] == nil {
 				klog.Infoln("new RDS instance found:", id)
-				c := NewRDSCollector(d, d.cfg.Region, &instance)
+				c := NewRDSCollector(d, d.region, &instance)
 				if err = prometheus.WrapRegistererWith(rdsLabels(id), d.reg).Register(c); err != nil {
 					klog.Error(err)
 					continue
 				}
 				d.rdsCollectors[id] = c
 			}
-			d.rdsCollectors[id].update(d.cfg.Region, &instance)
+			d.rdsCollectors[id].update(d.region, &instance)
 		}
 	}
 
@@ -254,18 +282,18 @@ func (d *Discoverer) discoverEC() {
 					}
 				}
 				for _, node := range cluster.CacheNodes {
-					id := d.cfg.Region + "/" + aws.ToString(cluster.CacheClusterId) + "/" + aws.ToString(node.CacheNodeId)
+					id := d.region + "/" + aws.ToString(cluster.CacheClusterId) + "/" + aws.ToString(node.CacheNodeId)
 					seen[id] = true
 					if d.ecCollectors[id] == nil {
 						klog.Infoln("new EC instance found:", id)
-						c := NewECCollector(d.cfg.Region, &cluster, &node)
+						c := NewECCollector(d.region, &cluster, &node)
 						if err = prometheus.WrapRegistererWith(ecLabels(id), d.reg).Register(c); err != nil {
 							klog.Error(err)
 							continue
 						}
 						d.ecCollectors[id] = c
 					}
-					d.ecCollectors[id].update(d.cfg.Region, &cluster, &node)
+					d.ecCollectors[id].update(d.region, &cluster, &node)
 				}
 			}
 		}
@@ -288,12 +316,9 @@ func ecLabels(id string) prometheus.Labels {
 	return prometheus.Labels{"ec_instance_id": id}
 }
 
-func newAWSConfig(ctx context.Context, cfg *config.AWSConfig) (aws.Config, error) {
-	return awsconfig.LoadDefaultConfig(ctx,
+func newAWSConfig(ctx context.Context, cfg *config.AWSConfig, k8s *k8s.K8S) (aws.Config, error) {
+	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
-		awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
-		),
 		awsconfig.WithRetryer(func() aws.Retryer {
 			return retry.NewStandard(func(o *retry.StandardOptions) {
 				o.MaxAttempts = 6
@@ -301,7 +326,69 @@ func newAWSConfig(ctx context.Context, cfg *config.AWSConfig) (aws.Config, error
 				o.Backoff = retry.NewExponentialJitterBackoff(10 * time.Second)
 			})
 		}),
-	)
+	}
+	if cfg.AccessKeyID != "" || cfg.SecretAccessKey != "" {
+		if cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
+			return aws.Config{}, fmt.Errorf("both access_key_id and secret_access_key must be set, or neither (to use the default AWS credential chain)")
+		}
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return aws.Config{}, err
+	}
+	if cfg.Region == "" {
+		if awsCfg.Region != "" {
+			klog.Infoln("AWS region is not configured, using the one from the environment:", awsCfg.Region)
+		} else {
+			awsCfg.Region, err = discoverRegion(ctx, awsCfg, k8s)
+			if err != nil {
+				return aws.Config{}, err
+			}
+			klog.Infoln("AWS region is not configured, using the discovered one:", awsCfg.Region)
+		}
+	}
+	return awsCfg, nil
+}
+
+func logIdentity(ctx context.Context, awsCfg aws.Config) bool {
+	if awsCfg.Credentials == nil {
+		klog.Errorln("AWS integration: no credentials provider configured")
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	creds, err := awsCfg.Credentials.Retrieve(ctx)
+	if err != nil {
+		klog.Errorln("AWS integration: failed to obtain credentials:", err)
+		return false
+	}
+	out, err := sts.NewFromConfig(awsCfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		klog.Errorf("AWS integration: region=%s, credentials=%s, failed to get the caller identity: %s", awsCfg.Region, creds.Source, err)
+		return false
+	}
+	klog.Infof("AWS integration: region=%s, credentials=%s, identity=%s", awsCfg.Region, creds.Source, aws.ToString(out.Arn))
+	return true
+}
+
+func discoverRegion(ctx context.Context, awsCfg aws.Config, k8s *k8s.K8S) (string, error) {
+	region, err := k8s.GetNodeRegion(ctx)
+	if err != nil {
+		klog.Warningln("failed to get the region from the kubernetes nodes:", err)
+	}
+	if region != "" {
+		return region, nil
+	}
+	imdsCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := imds.NewFromConfig(awsCfg).GetRegion(imdsCtx, &imds.GetRegionInput{})
+	if err == nil && out.Region != "" {
+		return out.Region, nil
+	}
+	return "", fmt.Errorf("failed to discover the AWS region (set the AWS_REGION env var): %w", err)
 }
 
 func idWithRegion(region, id string) string {
