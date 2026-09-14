@@ -9,6 +9,7 @@ import (
 )
 
 const topTransactionsN = 20
+const minLongTransactionSeconds = 10
 
 type innodbTrx struct {
 	byQuery map[string]float64 // obfuscated query shape -> max age (seconds)
@@ -44,7 +45,7 @@ func (c *Collector) queryInnodbTrx(ctx context.Context) (*innodbTrx, error) {
 			c.logger.Warning(err)
 			continue
 		}
-		if age < 1 {
+		if age < minLongTransactionSeconds {
 			continue
 		}
 		label := obfuscate.Sql(query)
