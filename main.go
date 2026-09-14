@@ -32,6 +32,10 @@ func main() {
 	router.PathPrefix("/debug/pprof/").Handler(http.DefaultServeMux)
 	router.HandleFunc("/health", health).Methods(http.MethodGet)
 
+	static, err := config.LoadStatic(*flags.ConfigFile)
+	if err != nil {
+		klog.Exitln(err)
+	}
 	config, err := config.NewUpdater()
 	if err != nil {
 		klog.Exitln(err)
@@ -42,7 +46,7 @@ func main() {
 		klog.Exitln(err)
 	}
 
-	ms, err := metrics.NewMetrics(k8s)
+	ms, err := metrics.NewMetrics(k8s, static)
 	if err != nil {
 		klog.Exitln(err)
 	}

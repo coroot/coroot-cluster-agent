@@ -18,17 +18,27 @@ type ApplicationInstrumentation struct {
 }
 
 type Credentials struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username string `json:"username" yaml:"username"`
+	Password string `json:"password" yaml:"password"`
+}
+
+type Database struct {
+	Type        string            `yaml:"type"`
+	Host        string            `yaml:"host"`
+	Port        string            `yaml:"port"`
+	RDS         string            `yaml:"rds"`
+	Elasticache string            `yaml:"elasticache"`
+	Credentials Credentials       `yaml:"credentials"`
+	Params      map[string]string `yaml:"params"`
 }
 
 type AWSConfig struct {
-	Region          string `json:"region"`
-	AccessKeyID     string `json:"access_key_id"`
-	SecretAccessKey string `json:"secret_access_key"`
+	Region          string `json:"region" yaml:"region"`
+	AccessKeyID     string `json:"access_key_id" yaml:"accessKeyId"`
+	SecretAccessKey string `json:"secret_access_key" yaml:"secretAccessKey"`
 
-	RDSTagFilters         map[string]string `json:"rds_tag_filters"`
-	ElasticacheTagFilters map[string]string `json:"elasticache_tag_filters"`
+	RDSTagFilters         map[string]string `json:"rds_tag_filters" yaml:"rdsTagFilters"`
+	ElasticacheTagFilters map[string]string `json:"elasticache_tag_filters" yaml:"elasticacheTagFilters"`
 }
 
 func (c *AWSConfig) Equal(other *AWSConfig) bool {

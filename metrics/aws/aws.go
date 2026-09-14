@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,56 @@ type Discoverer struct {
 
 	rdsCollectors map[string]*RDSCollector
 	ecCollectors  map[string]*ECCollector
+
+	endpointsLock sync.RWMutex
+	rdsEndpoints  map[string]Endpoint
+	ecEndpoints   map[string][]Endpoint
+}
+
+type Endpoint struct {
+	Host string
+	Port string
+}
+
+func (d *Discoverer) RDSEndpoint(id string) (Endpoint, bool) {
+	d.endpointsLock.RLock()
+	defer d.endpointsLock.RUnlock()
+	e, ok := d.rdsEndpoints[id]
+	return e, ok
+}
+
+func (d *Discoverer) ElastiCacheEndpoints(clusterId string) []Endpoint {
+	d.endpointsLock.RLock()
+	defer d.endpointsLock.RUnlock()
+	return d.ecEndpoints[clusterId]
+}
+
+func (d *Discoverer) publishEndpoints() {
+	rds := map[string]Endpoint{}
+	for _, c := range d.rdsCollectors {
+		if c.instance == nil || c.instance.Endpoint == nil {
+			continue
+		}
+		rds[aws.ToString(c.instance.DBInstanceIdentifier)] = Endpoint{
+			Host: aws.ToString(c.instance.Endpoint.Address),
+			Port: strconv.Itoa(int(aws.ToInt32(c.instance.Endpoint.Port))),
+		}
+	}
+	ec := map[string][]Endpoint{}
+	for _, c := range d.ecCollectors {
+		if c.cluster == nil || c.node == nil || c.node.Endpoint == nil {
+			continue
+		}
+		id := aws.ToString(c.cluster.CacheClusterId)
+		ec[id] = append(ec[id], Endpoint{
+			Host: aws.ToString(c.node.Endpoint.Address),
+			Port: strconv.Itoa(int(aws.ToInt32(c.node.Endpoint.Port))),
+		})
+	}
+	d.endpointsLock.Lock()
+	d.rdsEndpoints = rds
+	d.ecEndpoints = ec
+	d.endpointsLock.Unlock()
 }
 
 func NewDiscoverer(cfg *config.AWSConfig, k8s *k8s.K8S, reg prometheus.Registerer) (*Discoverer, error) {
@@ -182,6 +233,7 @@ func (d *Discoverer) discover() {
 	}
 	d.discoverRDS()
 	d.discoverEC()
+	d.publishEndpoints()
 
 	d.errorsLock.RLock()
 	errs := maps.Keys(d.errors)

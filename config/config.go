@@ -23,6 +23,7 @@ type Updater struct {
 	updateInterval time.Duration
 	httpClient     *http.Client
 	subscribers    []chan<- Config
+	last           *Config
 }
 
 func NewUpdater() (*Updater, error) {
@@ -56,10 +57,15 @@ func (u *Updater) Start() {
 			cfg, err := u.fetchConfig()
 			if err != nil {
 				klog.Error(err)
-			} else {
-				for _, s := range u.subscribers {
-					s <- *cfg
+				cfg = u.last
+				if cfg == nil {
+					cfg = &Config{}
 				}
+			} else {
+				u.last = cfg
+			}
+			for _, s := range u.subscribers {
+				s <- *cfg
 			}
 			<-ticker.C
 		}
