@@ -35,7 +35,7 @@ var (
 	TrackDatabaseSizes   = kingpin.Flag("track-database-sizes", "Collect per-database and per-table size metrics").Envar("TRACK_DATABASE_SIZES").Default("true").Bool()
 	TrackDatabaseBloat   = kingpin.Flag("track-database-bloat", "Estimate per-database, per-table and per-index bloat (Postgres only)").Envar("TRACK_DATABASE_BLOAT").Default("true").Bool()
 	MaxTablesPerDatabase = kingpin.Flag("max-tables-per-database", "Skip databases with more tables than this limit").Envar("MAX_TABLES_PER_DATABASE").Default("1000").Int()
-	ExcludeDatabases     = kingpin.Flag("exclude-databases", "Databases to exclude from schema and size tracking").Envar("EXCLUDE_DATABASES").Default("postgres", "mysql", "information_schema", "performance_schema", "sys", "mysql_innodb_cluster_metadata", "mysql_innodb_cluster_metadata_previous").Strings()
+	ExcludeDatabases     = kingpin.Flag("exclude-databases", "Databases to exclude from schema and size tracking").Envar("EXCLUDE_DATABASES").Default("postgres", "rdsadmin", "mysql", "information_schema", "performance_schema", "sys", "mysql_innodb_cluster_metadata", "mysql_innodb_cluster_metadata_previous").Strings()
 )
 
 func init() {

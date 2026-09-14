@@ -268,7 +268,7 @@ func (ms *Metrics) updateAWS(cfg *config.AWSConfig) {
 		ms.aws.Stop()
 		ms.aws = nil
 	case cfg != nil && ms.aws == nil:
-		d, err := aws.NewDiscoverer(cfg, ms.reg)
+		d, err := aws.NewDiscoverer(cfg, ms.k8s, ms.reg)
 		if err != nil {
 			klog.Errorln(err)
 		} else {
