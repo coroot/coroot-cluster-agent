@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	topQueriesN        = 20
-	hardQuerySizeLimit = 4096
+	topQueriesN               = 20
+	hardQuerySizeLimit        = 4096
+	topLongTransactions       = 20
+	minLongTransactionSeconds = 10
 )
 
 var (
@@ -60,6 +62,7 @@ var (
 	dXidAge                  = desc("pg_xid_age", "Transactions since the oldest unfrozen transaction ID (age of datfrozenxid)", "db")
 	dMultixactAge            = desc("pg_multixact_age", "Multixacts since the oldest unfrozen multixact ID (age of datminmxid)", "db")
 	dOldestXminAge           = desc("pg_oldest_xmin_age", "Age, in transactions, of the oldest transaction ID held back from freezing, by holder", "holder")
+	dTransactionSeconds      = desc("pg_transaction_seconds", "Age of the longest-running transaction, by query", "db", "user", "query")
 	dWalArchivedSegments     = desc("pg_wal_archived_segments_total", "Number of WAL files successfully archived")
 	dWalArchiveFailures      = desc("pg_wal_archive_failures_total", "Number of failed attempts to archive WAL files")
 	dWalArchivingStatus      = desc("pg_wal_archiving_status", "1 if the last WAL archive attempt succeeded, 0 if it failed")
@@ -369,6 +372,23 @@ func (c *Collector) connectionMetrics(ch chan<- prometheus.Metric) {
 	}
 	ch <- gauge(dAutovacuumWorkers, c.saCurr.autovacuumWorkers)
 
+	xactSecondsByQuery := map[QueryKey]float64{}
+	for _, conn := range c.saCurr.connections {
+		if !conn.IsClientBackend() || !conn.XactSeconds.Valid || conn.XactSeconds.Float64 < minLongTransactionSeconds {
+			continue
+		}
+		k := conn.QueryKey()
+		if k.Query == "" {
+			k.Query = "~empty"
+		}
+		if age := conn.XactSeconds.Float64; age > xactSecondsByQuery[k] {
+			xactSecondsByQuery[k] = age
+		}
+	}
+	for k, age := range common.TopNMapByValue(xactSecondsByQuery, topLongTransactions) {
+		ch <- gauge(dTransactionSeconds, age, k.DB, k.User, k.Query)
+	}
+
 	awaitingQueriesByBlockingQuery := map[QueryKey]float64{}
 	for blockingPid, awaitingQueries := range awaitingQueriesByBlockingPid {
 		blockingQuery, ok := byPid[blockingPid]
@@ -620,6 +640,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dXidAge
 	ch <- dMultixactAge
 	ch <- dOldestXminAge
+	ch <- dTransactionSeconds
 	ch <- dWalArchivingStatus
 	ch <- dDbSize
 	ch <- dTableSize
