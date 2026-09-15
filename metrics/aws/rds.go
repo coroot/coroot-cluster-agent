@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 	"github.com/coroot/coroot-cluster-agent/common"
+	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/coroot/logparser"
 	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/klog"
@@ -56,17 +57,28 @@ type RDSCollector struct {
 	instance *rdstypes.DBInstance
 	ip       *net.IPAddr
 
-	logReader *LogReader
-	logParser *logparser.Parser
+	logReader  *LogReader
+	logParser  *logparser.Parser
+	logEmitter *LogEmitter
 }
 
 func NewRDSCollector(discoverer *Discoverer, region string, instance *rdstypes.DBInstance) *RDSCollector {
 	c := &RDSCollector{discoverer: discoverer, region: region, instance: instance}
 
 	switch aws.ToString(c.instance.Engine) {
-	case "postgres", "aurora-postgresql":
+	case "postgres", "aurora-postgresql", "mysql", "mariadb", "aurora-mysql":
+		var onMsg logparser.OnMsgCallbackF
+		if *flags.CollectAWSLogs {
+			emitter, err := NewRDSLogEmitter(region, aws.ToString(c.instance.DBInstanceIdentifier))
+			if err != nil {
+				klog.Errorln("failed to create the log emitter, logs won't be forwarded:", err)
+			} else {
+				c.logEmitter = emitter
+				onMsg = emitter.Callback()
+			}
+		}
 		ch := make(chan logparser.LogEntry)
-		c.logParser = logparser.NewParser(ch, nil, nil)
+		c.logParser = logparser.NewParser(ch, nil, onMsg)
 		c.logReader = NewLogReader(discoverer, c.instance.DBInstanceIdentifier, ch)
 	}
 
@@ -130,6 +142,9 @@ func (c *RDSCollector) Stop() {
 	}
 	if c.logParser != nil {
 		c.logParser.Stop()
+	}
+	if c.logEmitter != nil {
+		c.logEmitter.Stop()
 	}
 }
 

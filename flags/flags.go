@@ -31,6 +31,7 @@ var (
 
 	CollectKubernetesEvents = kingpin.Flag("collect-kubernetes-events", "Collect and forward Kubernetes events").Envar("COLLECT_KUBERNETES_EVENTS").Default("true").Bool()
 
+	CollectAWSLogs       = kingpin.Flag("collect-aws-logs", "Collect and forward logs of RDS instances discovered through the AWS integration (Postgres)").Envar("COLLECT_AWS_LOGS").Default("true").Bool()
 	TrackDatabaseChanges = kingpin.Flag("track-database-changes", "Track schema and settings changes in databases").Envar("TRACK_DATABASE_CHANGES").Default("true").Bool()
 	TrackDatabaseSizes   = kingpin.Flag("track-database-sizes", "Collect per-database and per-table size metrics").Envar("TRACK_DATABASE_SIZES").Default("true").Bool()
 	TrackDatabaseBloat   = kingpin.Flag("track-database-bloat", "Estimate per-database, per-table and per-index bloat (Postgres only)").Envar("TRACK_DATABASE_BLOAT").Default("true").Bool()
