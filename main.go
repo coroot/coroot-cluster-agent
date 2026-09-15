@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	_ "net/http/pprof"
 	"time"
 
+	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/coroot-cluster-agent/config"
 	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/coroot/coroot-cluster-agent/k8s"
@@ -68,6 +70,11 @@ func main() {
 
 	config.Start()
 	defer config.Stop()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = common.ShutdownLogs(ctx)
+	}()
 
 	k8s.Start()
 	defer k8s.Stop()

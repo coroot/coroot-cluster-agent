@@ -5,12 +5,7 @@ import (
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
-	"github.com/coroot/coroot-cluster-agent/flags"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/log"
-	sdk "go.opentelemetry.io/otel/sdk/log"
-	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.32.0"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -19,24 +14,10 @@ type EventsLogger struct {
 }
 
 func NewEventsLogger() (*EventsLogger, error) {
-	opts := []otlploghttp.Option{
-		otlploghttp.WithEndpointURL((*flags.CorootURL).JoinPath("/v1/logs").String()),
-		otlploghttp.WithHeaders(common.AuthHeaders(*flags.APIKey)),
-	}
-	if (*flags.CorootURL).Scheme == "https" {
-		opts = append(opts, otlploghttp.WithTLSClientConfig(common.TlsConfig()))
-	}
-	exporter, err := otlploghttp.New(context.Background(), opts...)
+	provider, err := common.NewLoggerProvider("KubernetesEvents")
 	if err != nil {
 		return nil, err
 	}
-	batcher := sdk.NewBatchProcessor(exporter)
-	provider := sdk.NewLoggerProvider(
-		sdk.WithProcessor(batcher),
-		sdk.WithResource(resource.NewWithAttributes(semconv.SchemaURL,
-			semconv.ServiceName("KubernetesEvents"),
-		)),
-	)
 	return &EventsLogger{logger: provider.Logger("coroot-cluster-agent")}, nil
 }
 
