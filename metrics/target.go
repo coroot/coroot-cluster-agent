@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
@@ -197,6 +198,9 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			ConnectionTimeouts:             collectTimeout,
 			RedisMetricsOnly:               true,
 			ExcludeLatencyHistogramMetrics: true,
+		}
+		if strings.Contains(t.Description, "elasticache:") { // ElastiCache doesn't allow the CONFIG command
+			opts.ConfigCommandName = "-"
 		}
 		collector, err := redis.NewRedisExporter(dsn, opts)
 		if err != nil {
