@@ -61,7 +61,7 @@ func (c *Collector) getStatStatements(ctx context.Context, version semver.Versio
 			c.logger.Warning("failed to scan pg_stat_statements row:", err)
 			continue
 		}
-		if id.user.String == "" || id.db.String == "" || !id.id.Valid {
+		if id.user.String == "" || id.db.String == "" || !id.id.Valid || c.excludeDatabases[id.db.String] {
 			continue
 		}
 		if p, ok := prev[id]; ok {

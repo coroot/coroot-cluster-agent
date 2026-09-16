@@ -110,3 +110,8 @@ func SplitHostPort(addr string) (host string, port int, err error) {
 	}
 	return host, port, nil
 }
+
+type Endpoint struct {
+	Host string
+	Port string
+}

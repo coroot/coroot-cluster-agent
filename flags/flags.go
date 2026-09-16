@@ -32,12 +32,13 @@ var (
 	CollectKubernetesEvents = kingpin.Flag("collect-kubernetes-events", "Collect and forward Kubernetes events").Envar("COLLECT_KUBERNETES_EVENTS").Default("true").Bool()
 
 	CollectAWSLogs       = kingpin.Flag("collect-aws-logs", "Collect and forward logs of RDS instances discovered through the AWS integration (Postgres)").Envar("COLLECT_AWS_LOGS").Default("true").Bool()
+	CollectGCPLogs       = kingpin.Flag("collect-gcp-logs", "Collect and forward logs of Cloud SQL instances discovered through the GCP integration").Envar("COLLECT_GCP_LOGS").Default("true").Bool()
 	TrackDatabaseChanges = kingpin.Flag("track-database-changes", "Track schema and settings changes in databases").Envar("TRACK_DATABASE_CHANGES").Default("true").Bool()
 	TrackDatabaseSizes   = kingpin.Flag("track-database-sizes", "Collect per-database and per-table size metrics").Envar("TRACK_DATABASE_SIZES").Default("true").Bool()
 	TrackDatabaseBloat   = kingpin.Flag("track-database-bloat", "Estimate per-database, per-table and per-index bloat (Postgres only)").Envar("TRACK_DATABASE_BLOAT").Default("true").Bool()
 	MaxTablesPerDatabase = kingpin.Flag("max-tables-per-database", "Skip databases with more tables than this limit").Envar("MAX_TABLES_PER_DATABASE").Default("1000").Int()
-	ConfigFile           = kingpin.Flag("config-file", "Path to a YAML file with static configuration (AWS integration settings and databases to monitor), merged with the configuration received from Coroot").Envar("CONFIG_FILE").String()
-	ExcludeDatabases     = kingpin.Flag("exclude-databases", "Databases to exclude from schema and size tracking").Envar("EXCLUDE_DATABASES").Default("postgres", "rdsadmin", "mysql", "information_schema", "performance_schema", "sys", "mysql_innodb_cluster_metadata", "mysql_innodb_cluster_metadata_previous").Strings()
+	ConfigFile           = kingpin.Flag("config-file", "Path to a YAML file with static configuration (AWS and GCP integration settings and databases to monitor), merged with the configuration received from Coroot").Envar("CONFIG_FILE").String()
+	ExcludeDatabases     = kingpin.Flag("exclude-databases", "Databases to exclude from monitoring: no schema, size, connection or query statistics are collected for them").Envar("EXCLUDE_DATABASES").Default("rdsadmin", "cloudsqladmin", "mysql", "information_schema", "performance_schema", "sys", "mysql_innodb_cluster_metadata", "mysql_innodb_cluster_metadata_previous").Strings()
 )
 
 func init() {

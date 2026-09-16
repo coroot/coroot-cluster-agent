@@ -59,52 +59,60 @@ type Discoverer struct {
 	ecCollectors  map[string]*ECCollector
 
 	endpointsLock sync.RWMutex
-	rdsEndpoints  map[string]Endpoint
-	ecEndpoints   map[string][]Endpoint
+	rdsEndpoints  map[string]common.Endpoint
+	rdsReplicas   map[string][]string
+	ecEndpoints   map[string][]common.Endpoint
 }
 
-type Endpoint struct {
-	Host string
-	Port string
-}
-
-func (d *Discoverer) RDSEndpoint(id string) (Endpoint, bool) {
+func (d *Discoverer) RDSEndpoint(id string) (common.Endpoint, bool) {
 	d.endpointsLock.RLock()
 	defer d.endpointsLock.RUnlock()
 	e, ok := d.rdsEndpoints[id]
 	return e, ok
 }
 
-func (d *Discoverer) ElastiCacheEndpoints(clusterId string) []Endpoint {
+func (d *Discoverer) RDSReplicas(source string) []string {
+	d.endpointsLock.RLock()
+	defer d.endpointsLock.RUnlock()
+	return d.rdsReplicas[source]
+}
+
+func (d *Discoverer) ElastiCacheEndpoints(clusterId string) []common.Endpoint {
 	d.endpointsLock.RLock()
 	defer d.endpointsLock.RUnlock()
 	return d.ecEndpoints[clusterId]
 }
 
 func (d *Discoverer) publishEndpoints() {
-	rds := map[string]Endpoint{}
+	rds := map[string]common.Endpoint{}
+	replicas := map[string][]string{}
 	for _, c := range d.rdsCollectors {
 		if c.instance == nil || c.instance.Endpoint == nil {
 			continue
 		}
-		rds[aws.ToString(c.instance.DBInstanceIdentifier)] = Endpoint{
+		id := aws.ToString(c.instance.DBInstanceIdentifier)
+		rds[id] = common.Endpoint{
 			Host: aws.ToString(c.instance.Endpoint.Address),
 			Port: strconv.Itoa(int(aws.ToInt32(c.instance.Endpoint.Port))),
 		}
+		if source := aws.ToString(c.instance.ReadReplicaSourceDBInstanceIdentifier); source != "" {
+			replicas[source] = append(replicas[source], id)
+		}
 	}
-	ec := map[string][]Endpoint{}
+	ec := map[string][]common.Endpoint{}
 	for _, c := range d.ecCollectors {
 		if c.cluster == nil || c.node == nil || c.node.Endpoint == nil {
 			continue
 		}
 		id := aws.ToString(c.cluster.CacheClusterId)
-		ec[id] = append(ec[id], Endpoint{
+		ec[id] = append(ec[id], common.Endpoint{
 			Host: aws.ToString(c.node.Endpoint.Address),
 			Port: strconv.Itoa(int(aws.ToInt32(c.node.Endpoint.Port))),
 		})
 	}
 	d.endpointsLock.Lock()
 	d.rdsEndpoints = rds
+	d.rdsReplicas = replicas
 	d.ecEndpoints = ec
 	d.endpointsLock.Unlock()
 }
@@ -216,12 +224,14 @@ func (d *Discoverer) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (d *Discoverer) registerError(err error) {
+	msg := err.Error()
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
-		d.errorsLock.Lock()
-		d.errors[apiErr.ErrorMessage()] = true
-		d.errorsLock.Unlock()
+		msg = apiErr.ErrorMessage()
 	}
+	d.errorsLock.Lock()
+	d.errors[msg] = true
+	d.errorsLock.Unlock()
 }
 
 func (d *Discoverer) discover() {

@@ -32,6 +32,9 @@ func (c *Collector) getWraparoundStats(ctx context.Context, version semver.Versi
 			c.logger.Warning(err)
 			continue
 		}
+		if c.excludeDatabases[db] {
+			continue
+		}
 		if xid.Valid {
 			ws.xidAge[db] = float64(xid.V)
 		}

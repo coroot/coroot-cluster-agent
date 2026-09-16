@@ -59,7 +59,7 @@ type RDSCollector struct {
 
 	logReader  *LogReader
 	logParser  *logparser.Parser
-	logEmitter *LogEmitter
+	logEmitter *common.LogEmitter
 }
 
 func NewRDSCollector(discoverer *Discoverer, region string, instance *rdstypes.DBInstance) *RDSCollector {
@@ -69,7 +69,7 @@ func NewRDSCollector(discoverer *Discoverer, region string, instance *rdstypes.D
 	case "postgres", "aurora-postgresql", "mysql", "mariadb", "aurora-mysql":
 		var onMsg logparser.OnMsgCallbackF
 		if *flags.CollectAWSLogs {
-			emitter, err := NewRDSLogEmitter(region, aws.ToString(c.instance.DBInstanceIdentifier))
+			emitter, err := common.NewLogEmitter("/aws/rds/" + region + "/" + aws.ToString(c.instance.DBInstanceIdentifier))
 			if err != nil {
 				klog.Errorln("failed to create the log emitter, logs won't be forwarded:", err)
 			} else {

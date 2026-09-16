@@ -151,6 +151,7 @@ type Collector struct {
 	scrapeErrors map[string]bool
 
 	dbTracker        *databaseTracker
+	excludeDatabases map[string]bool
 	emitter          dbtracker.ChangeEmitter
 	targetAddr       string
 	prevSettingsText string
@@ -162,15 +163,19 @@ type Collector struct {
 func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter dbtracker.ChangeEmitter, targetAddr string, maxTablesPerDB int, trackSizes, trackBloat bool, excludeDatabases []string) (*Collector, error) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
-		ctx:            ctx,
-		logger:         logger,
-		ctxCancelFunc:  cancelFunc,
-		done:           make(chan struct{}),
-		scrapeErrors:   map[string]bool{},
-		scrapeInterval: scrapeInterval,
-		collectTimeout: collectTimeout,
-		targetAddr:     targetAddr,
-		emitter:        emitter,
+		ctx:              ctx,
+		logger:           logger,
+		ctxCancelFunc:    cancelFunc,
+		done:             make(chan struct{}),
+		scrapeErrors:     map[string]bool{},
+		scrapeInterval:   scrapeInterval,
+		collectTimeout:   collectTimeout,
+		targetAddr:       targetAddr,
+		emitter:          emitter,
+		excludeDatabases: map[string]bool{},
+	}
+	for _, dbName := range excludeDatabases {
+		c.excludeDatabases[dbName] = true
 	}
 	var err error
 	c.db, err = sql.Open("postgres", dsn)
