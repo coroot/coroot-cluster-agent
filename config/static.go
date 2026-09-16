@@ -9,6 +9,7 @@ import (
 
 type Static struct {
 	AWS       *AWSConfig `yaml:"aws"`
+	GCP       *GCPConfig `yaml:"gcp"`
 	Databases []Database `yaml:"databases"`
 }
 
@@ -39,13 +40,13 @@ func (s *Static) Validate() error {
 			return fmt.Errorf("databases[%d]: type is required", i)
 		}
 		sources := 0
-		for _, v := range []string{d.Host, d.RDS, d.Elasticache} {
+		for _, v := range []string{d.Host, d.RDS, d.Elasticache, d.CloudSQL, d.Memorystore} {
 			if v != "" {
 				sources++
 			}
 		}
 		if sources != 1 {
-			return fmt.Errorf("databases[%d]: exactly one of host, rds or elasticache is required", i)
+			return fmt.Errorf("databases[%d]: exactly one of host, rds, elasticache, cloudsql or memorystore is required", i)
 		}
 		if d.Host != "" && d.Port == "" {
 			return fmt.Errorf("databases[%d]: port is required with host", i)

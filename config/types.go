@@ -28,6 +28,8 @@ type Database struct {
 	Port        string            `yaml:"port"`
 	RDS         string            `yaml:"rds"`
 	Elasticache string            `yaml:"elasticache"`
+	CloudSQL    string            `yaml:"cloudsql"`
+	Memorystore string            `yaml:"memorystore"`
 	Credentials Credentials       `yaml:"credentials"`
 	Params      map[string]string `yaml:"params"`
 }
@@ -47,4 +49,20 @@ func (c *AWSConfig) Equal(other *AWSConfig) bool {
 		c.SecretAccessKey == other.SecretAccessKey &&
 		maps.Equal(c.RDSTagFilters, other.RDSTagFilters) &&
 		maps.Equal(c.ElasticacheTagFilters, other.ElasticacheTagFilters)
+}
+
+type GCPConfig struct {
+	ProjectID               string            `json:"project_id" yaml:"projectId"`
+	Region                  string            `json:"region" yaml:"region"`
+	CredentialsJSON         string            `json:"credentials_json" yaml:"credentialsJson"`
+	CloudSQLLabelFilters    map[string]string `json:"cloudsql_label_filters" yaml:"cloudsqlLabelFilters"`
+	MemorystoreLabelFilters map[string]string `json:"memorystore_label_filters" yaml:"memorystoreLabelFilters"`
+}
+
+func (c *GCPConfig) Equal(other *GCPConfig) bool {
+	return c.ProjectID == other.ProjectID &&
+		c.Region == other.Region &&
+		c.CredentialsJSON == other.CredentialsJSON &&
+		maps.Equal(c.CloudSQLLabelFilters, other.CloudSQLLabelFilters) &&
+		maps.Equal(c.MemorystoreLabelFilters, other.MemorystoreLabelFilters)
 }

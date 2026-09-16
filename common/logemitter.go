@@ -1,10 +1,9 @@
-package aws
+package common
 
 import (
 	"context"
 	"time"
 
-	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/logparser"
 	"go.opentelemetry.io/otel/log"
 	sdk "go.opentelemetry.io/otel/sdk/log"
@@ -16,8 +15,8 @@ type LogEmitter struct {
 	logger   log.Logger
 }
 
-func NewRDSLogEmitter(region, instanceId string) (*LogEmitter, error) {
-	provider, err := common.NewLoggerProvider("/aws/rds/" + region + "/" + instanceId)
+func NewLogEmitter(serviceName string) (*LogEmitter, error) {
+	provider, err := NewLoggerProvider(serviceName)
 	if err != nil {
 		return nil, err
 	}

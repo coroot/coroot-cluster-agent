@@ -16,6 +16,7 @@ import (
 	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/coroot/coroot-cluster-agent/k8s"
 	"github.com/coroot/coroot-cluster-agent/metrics/aws"
+	"github.com/coroot/coroot-cluster-agent/metrics/gcp"
 	"github.com/coroot/coroot-cluster-agent/metrics/ksm"
 	"github.com/coroot/coroot-cluster-agent/schema/emitter"
 	"github.com/coroot/logger"
@@ -44,6 +45,8 @@ type Metrics struct {
 	targetsLock sync.Mutex
 
 	aws          *aws.Discoverer
+	gcp          *gcp.Discoverer
+	cloudErrors  map[string]string
 	k8s          *k8s.K8S
 	static       *config.Static
 	k8sPodEvents <-chan k8s.PodEvent
@@ -117,6 +120,7 @@ func (ms *Metrics) ListenConfigUpdates(updates <-chan config.Config) {
 			}
 			ms.updateAWS(cfg.AWSConfig)
 			if ms.static != nil {
+				ms.updateGCP(ms.static.GCP)
 				instrumentation = append(instrumentation, ms.resolveDatabases(ms.static.Databases)...)
 			}
 			ms.discoverFromConfig(instrumentation)
@@ -281,9 +285,7 @@ func (ms *Metrics) updateAWS(cfg *config.AWSConfig) {
 		ms.aws = nil
 	case cfg != nil && ms.aws == nil:
 		d, err := aws.NewDiscoverer(cfg, ms.k8s, ms.reg)
-		if err != nil {
-			klog.Errorln(err)
-		} else {
+		if ms.logCloudError("aws", err) {
 			ms.aws = d
 		}
 	default:
@@ -294,6 +296,33 @@ func (ms *Metrics) updateAWS(cfg *config.AWSConfig) {
 			ms.aws = nil
 		}
 	}
+}
+
+func (ms *Metrics) updateGCP(cfg *config.GCPConfig) {
+	if ms.gcp != nil && (cfg == nil || !ms.gcp.Config().Equal(cfg)) { // recreated on a change: rare, and simpler than reconfiguring
+		ms.gcp.Stop()
+		ms.gcp = nil
+	}
+	if cfg != nil && ms.gcp == nil {
+		if d, err := gcp.NewDiscoverer(cfg, ms.k8s, ms.reg); ms.logCloudError("gcp", err) {
+			ms.gcp = d
+		}
+	}
+}
+
+func (ms *Metrics) logCloudError(cloud string, err error) bool {
+	if ms.cloudErrors == nil {
+		ms.cloudErrors = map[string]string{}
+	}
+	if err == nil {
+		delete(ms.cloudErrors, cloud)
+		return true
+	}
+	if ms.cloudErrors[cloud] != err.Error() {
+		klog.Errorln(err)
+		ms.cloudErrors[cloud] = err.Error()
+	}
+	return false
 }
 
 func (ms *Metrics) discoverFromPods() {
@@ -336,7 +365,7 @@ func (ms *Metrics) discoverFromPods() {
 func (ms *Metrics) resolveDatabases(databases []config.Database) []config.ApplicationInstrumentation {
 	var res []config.ApplicationInstrumentation
 	for _, d := range databases {
-		var endpoints []aws.Endpoint
+		var endpoints []common.Endpoint
 		var description string
 		switch {
 		case d.RDS != "":
@@ -350,7 +379,12 @@ func (ms *Metrics) resolveDatabases(databases []config.Database) []config.Applic
 				klog.Warningf("%s: the RDS instance is not discovered (yet), skipping", description)
 				continue
 			}
-			endpoints = []aws.Endpoint{e}
+			endpoints = []common.Endpoint{e}
+			for _, replica := range ms.aws.RDSReplicas(d.RDS) {
+				if e, ok := ms.aws.RDSEndpoint(replica); ok {
+					res = append(res, ms.databaseTargets(d, "rds:"+replica, []common.Endpoint{e})...)
+				}
+			}
 		case d.Elasticache != "":
 			description = "elasticache:" + d.Elasticache
 			if ms.aws == nil {
@@ -362,26 +396,59 @@ func (ms *Metrics) resolveDatabases(databases []config.Database) []config.Applic
 				klog.Warningf("%s: the ElastiCache cluster is not discovered (yet), skipping", description)
 				continue
 			}
+		case d.CloudSQL != "":
+			description = "cloudsql:" + d.CloudSQL
+			if ms.gcp == nil {
+				klog.Warningf("%s: the GCP integration is not configured, skipping", description)
+				continue
+			}
+			e, ok := ms.gcp.CloudSQLEndpoint(d.CloudSQL)
+			if !ok {
+				klog.Warningf("%s: the Cloud SQL instance is not discovered (yet), skipping", description)
+				continue
+			}
+			endpoints = []common.Endpoint{e}
+			for _, replica := range ms.gcp.CloudSQLReplicas(d.CloudSQL) {
+				if e, ok := ms.gcp.CloudSQLEndpoint(replica); ok {
+					res = append(res, ms.databaseTargets(d, "cloudsql:"+replica, []common.Endpoint{e})...)
+				}
+			}
+		case d.Memorystore != "":
+			description = "memorystore:" + d.Memorystore
+			if ms.gcp == nil {
+				klog.Warningf("%s: the GCP integration is not configured, skipping", description)
+				continue
+			}
+			endpoints = ms.gcp.MemorystoreEndpoints(d.Memorystore)
+			if len(endpoints) == 0 {
+				klog.Warningf("%s: the Memorystore instance is not discovered (yet), skipping", description)
+				continue
+			}
 		default:
 			description = d.Host
-			endpoints = []aws.Endpoint{{Host: d.Host, Port: d.Port}}
+			endpoints = []common.Endpoint{{Host: d.Host, Port: d.Port}}
 		}
+		res = append(res, ms.databaseTargets(d, description, endpoints)...)
+	}
+	return res
+}
+
+func (ms *Metrics) databaseTargets(d config.Database, description string, endpoints []common.Endpoint) []config.ApplicationInstrumentation {
+	var res []config.ApplicationInstrumentation
+	for _, e := range endpoints {
+		port := e.Port
 		if d.Port != "" {
-			for i := range endpoints {
-				endpoints[i].Port = d.Port
-			}
+			port = d.Port
 		}
-		for _, e := range endpoints {
-			for _, ip := range resolveHost(e.Host) {
-				res = append(res, config.ApplicationInstrumentation{
-					Type:        d.Type,
-					Host:        ip,
-					Port:        e.Port,
-					Credentials: d.Credentials,
-					Params:      d.Params,
-					Instance:    description,
-				})
-			}
+		for _, ip := range resolveHost(e.Host) {
+			res = append(res, config.ApplicationInstrumentation{
+				Type:        d.Type,
+				Host:        ip,
+				Port:        port,
+				Credentials: d.Credentials,
+				Params:      d.Params,
+				Instance:    description,
+			})
 		}
 	}
 	return res

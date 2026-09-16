@@ -74,7 +74,7 @@ func (c *Collector) getPgStatActivity(ctx context.Context, version semver.Versio
 		if conn.BackendType.String == "autovacuum worker" {
 			snapshot.autovacuumWorkers++
 		}
-		if conn.DB.String == "" || conn.User.String == "" || conn.State.String == "" {
+		if conn.DB.String == "" || conn.User.String == "" || conn.State.String == "" || c.excludeDatabases[conn.DB.String] {
 			continue
 		}
 		if oldStyleWaiting.Bool {

@@ -17,11 +17,12 @@ type Setting struct {
 	Value    float64
 	RawValue string
 	Source   string // default, configuration file, command line, environment variable, global, override, session, client, etc.
+	Context  string // internal, postmaster, sighup, superuser-backend, backend, superuser, user
 	IsMetric bool   // true for integer, real, bool vartypes
 }
 
 func (c *Collector) getSettings(ctx context.Context) ([]Setting, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT name, setting, unit, vartype, source FROM pg_settings ORDER BY name`)
+	rows, err := c.db.QueryContext(ctx, `SELECT name, setting, unit, vartype, source, context FROM pg_settings ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -29,8 +30,8 @@ func (c *Collector) getSettings(ctx context.Context) ([]Setting, error) {
 
 	var res []Setting
 	for rows.Next() {
-		var name, value, unit, vartype, source sql.NullString
-		if err := rows.Scan(&name, &value, &unit, &vartype, &source); err != nil {
+		var name, value, unit, vartype, source, context sql.NullString
+		if err := rows.Scan(&name, &value, &unit, &vartype, &source, &context); err != nil {
 			c.logger.Warning("failed to scan pg_settings row:", err)
 			continue
 		}
@@ -39,6 +40,7 @@ func (c *Collector) getSettings(ctx context.Context) ([]Setting, error) {
 			Unit:     unit.String,
 			RawValue: value.String,
 			Source:   source.String,
+			Context:  context.String,
 		}
 		switch vartype.String {
 		case "integer", "real":
@@ -65,6 +67,9 @@ func settingsToText(settings []Setting) string {
 	for _, s := range settings {
 		switch s.Source {
 		case "override", "session", "client":
+			continue
+		}
+		if s.Context == "internal" {
 			continue
 		}
 		fmt.Fprintf(&buf, "%s = %s\n", s.Name, s.RawValue)

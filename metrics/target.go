@@ -199,7 +199,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			RedisMetricsOnly:               true,
 			ExcludeLatencyHistogramMetrics: true,
 		}
-		if strings.Contains(t.Description, "elasticache:") { // ElastiCache doesn't allow the CONFIG command
+		if strings.Contains(t.Description, "elasticache:") || strings.Contains(t.Description, "memorystore:") { // managed services don't allow the CONFIG command
 			opts.ConfigCommandName = "-"
 		}
 		collector, err := redis.NewRedisExporter(dsn, opts)
