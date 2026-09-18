@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -276,9 +275,6 @@ func (d *Discoverer) registerError(err error) {
 }
 
 func (d *Discoverer) discover() {
-	d.errorsLock.Lock()
-	d.errors = map[string]bool{}
-	d.errorsLock.Unlock()
 	d.discoverCloudSQL()
 	d.discoverMemorystore()
 	d.publishEndpoints()
@@ -286,9 +282,10 @@ func (d *Discoverer) discover() {
 		d.monitoring.refresh(d)
 	}
 
-	d.errorsLock.RLock()
+	d.errorsLock.Lock()
 	errs := maps.Keys(d.errors)
-	d.errorsLock.RUnlock()
+	d.errors = map[string]bool{}
+	d.errorsLock.Unlock()
 	summary := fmt.Sprintf("GCP discovery (project=%s, region=%s): %d Cloud SQL instances, %d Memorystore instances", d.project, d.regionScope(), len(d.sqlCollectors), len(d.redisCollectors))
 	switch {
 	case len(errs) > 0:
@@ -329,13 +326,4 @@ func cloudSQLLabels(id string) prometheus.Labels {
 
 func memorystoreLabels(id string) prometheus.Labels {
 	return prometheus.Labels{"memorystore_instance_id": id}
-}
-
-func labelsMatched(filters, labels map[string]string) bool {
-	for name, desired := range filters {
-		if matched, _ := filepath.Match(desired, labels[name]); !matched {
-			return false
-		}
-	}
-	return true
 }

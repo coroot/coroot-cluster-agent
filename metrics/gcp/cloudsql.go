@@ -34,7 +34,7 @@ func (d *Discoverer) discoverCloudSQL() {
 	seen := map[string]bool{}
 	for _, instance := range instances {
 		filters, labels := d.cfg.CloudSQLLabelFilters, userLabels(instance)
-		if !labelsMatched(filters, labels) && !labelsMatched(filters, userLabels(byName[replicaPrimary(instance)])) {
+		if !common.LabelsMatched(filters, labels) && !common.LabelsMatched(filters, userLabels(byName[replicaPrimary(instance)])) {
 			klog.Infof("Cloud SQL instance %s (labels: %s) was skipped according to the label-based filters: %s", instance.Name, labels, filters)
 			continue
 		}

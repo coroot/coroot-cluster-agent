@@ -32,6 +32,7 @@ type Collector struct {
 	host         string
 	db           *sql.DB
 	logger       logger.Logger
+	errorLog     *ErrorLogReader
 	topN         int
 	cancelFunc   context.CancelFunc
 	lock         sync.RWMutex
@@ -126,6 +127,9 @@ func New(dsn string, logger logger.Logger, scrapeInterval, collectTimeout time.D
 
 func (c *Collector) Close() error {
 	c.cancelFunc()
+	if c.errorLog != nil {
+		c.errorLog.Stop()
+	}
 	return c.db.Close()
 }
 

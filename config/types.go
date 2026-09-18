@@ -1,6 +1,10 @@
 package config
 
-import "golang.org/x/exp/maps"
+import (
+	"slices"
+
+	"golang.org/x/exp/maps"
+)
 
 type Config struct {
 	ApplicationInstrumentation []ApplicationInstrumentation `json:"application_instrumentation"`
@@ -30,6 +34,8 @@ type Database struct {
 	Elasticache string            `yaml:"elasticache"`
 	CloudSQL    string            `yaml:"cloudsql"`
 	Memorystore string            `yaml:"memorystore"`
+	OCIDB       string            `yaml:"ocidb"`
+	OCICache    string            `yaml:"ocicache"`
 	Credentials Credentials       `yaml:"credentials"`
 	Params      map[string]string `yaml:"params"`
 }
@@ -65,4 +71,26 @@ func (c *GCPConfig) Equal(other *GCPConfig) bool {
 		c.CredentialsJSON == other.CredentialsJSON &&
 		maps.Equal(c.CloudSQLLabelFilters, other.CloudSQLLabelFilters) &&
 		maps.Equal(c.MemorystoreLabelFilters, other.MemorystoreLabelFilters)
+}
+
+type OCIConfig struct {
+	CompartmentIDs  []string          `json:"compartment_ids" yaml:"compartmentIds"`
+	Region          string            `json:"region" yaml:"region"`
+	TenancyID       string            `json:"tenancy_id" yaml:"tenancyId"` // API key auth: the four fields below
+	UserID          string            `json:"user_id" yaml:"userId"`
+	Fingerprint     string            `json:"fingerprint" yaml:"fingerprint"`
+	PrivateKey      string            `json:"private_key" yaml:"privateKey"`
+	DBTagFilters    map[string]string `json:"db_tag_filters" yaml:"dbTagFilters"`
+	CacheTagFilters map[string]string `json:"cache_tag_filters" yaml:"cacheTagFilters"`
+}
+
+func (c *OCIConfig) Equal(other *OCIConfig) bool {
+	return slices.Equal(c.CompartmentIDs, other.CompartmentIDs) &&
+		c.Region == other.Region &&
+		c.TenancyID == other.TenancyID &&
+		c.UserID == other.UserID &&
+		c.Fingerprint == other.Fingerprint &&
+		c.PrivateKey == other.PrivateKey &&
+		maps.Equal(c.DBTagFilters, other.DBTagFilters) &&
+		maps.Equal(c.CacheTagFilters, other.CacheTagFilters)
 }

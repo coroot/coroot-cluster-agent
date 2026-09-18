@@ -18,8 +18,11 @@ import (
 	"github.com/coroot/coroot-cluster-agent/metrics/aws"
 	"github.com/coroot/coroot-cluster-agent/metrics/gcp"
 	"github.com/coroot/coroot-cluster-agent/metrics/ksm"
+	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
+	"github.com/coroot/coroot-cluster-agent/metrics/oci"
 	"github.com/coroot/coroot-cluster-agent/schema/emitter"
 	"github.com/coroot/logger"
+	"github.com/coroot/logparser"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/exp/maps"
@@ -46,6 +49,7 @@ type Metrics struct {
 
 	aws          *aws.Discoverer
 	gcp          *gcp.Discoverer
+	oci          *oci.Discoverer
 	cloudErrors  map[string]string
 	k8s          *k8s.K8S
 	static       *config.Static
@@ -114,16 +118,20 @@ func (ms *Metrics) Stop() {
 func (ms *Metrics) ListenConfigUpdates(updates <-chan config.Config) {
 	go func() {
 		for cfg := range updates {
-			instrumentation := cfg.ApplicationInstrumentation
+			var targets []*Target
+			for _, i := range cfg.ApplicationInstrumentation {
+				targets = append(targets, TargetFromConfig(i))
+			}
 			if ms.static != nil && ms.static.AWS != nil {
 				cfg.AWSConfig = ms.static.AWS
 			}
 			ms.updateAWS(cfg.AWSConfig)
 			if ms.static != nil {
 				ms.updateGCP(ms.static.GCP)
-				instrumentation = append(instrumentation, ms.resolveDatabases(ms.static.Databases)...)
+				ms.updateOCI(ms.static.OCI)
+				targets = append(targets, ms.resolveDatabases(ms.static.Databases)...)
 			}
-			ms.discoverFromConfig(instrumentation)
+			ms.discoverFromConfig(targets)
 		}
 	}()
 }
@@ -146,12 +154,12 @@ func (ms *Metrics) addTarget(target *Target) {
 func (ms *Metrics) delTarget(target *Target) {
 	klog.Infof("removing target: %s", target)
 	ms.targetsLock.Lock()
-	defer ms.targetsLock.Unlock()
 	t := ms.targets[target.Addr]
+	delete(ms.targets, target.Addr)
+	ms.targetsLock.Unlock()
 	if t != nil {
 		t.StopExporter(ms.reg)
 	}
-	delete(ms.targets, target.Addr)
 }
 
 func (ms *Metrics) startExporters() {
@@ -310,6 +318,18 @@ func (ms *Metrics) updateGCP(cfg *config.GCPConfig) {
 	}
 }
 
+func (ms *Metrics) updateOCI(cfg *config.OCIConfig) {
+	if ms.oci != nil && (cfg == nil || !ms.oci.Config().Equal(cfg)) {
+		ms.oci.Stop()
+		ms.oci = nil
+	}
+	if cfg != nil && ms.oci == nil {
+		if d, err := oci.NewDiscoverer(cfg, ms.k8s, ms.reg, ms.ociLogCounters); ms.logCloudError("oci", err) {
+			ms.oci = d
+		}
+	}
+}
+
 func (ms *Metrics) logCloudError(cloud string, err error) bool {
 	if ms.cloudErrors == nil {
 		ms.cloudErrors = map[string]string{}
@@ -362,8 +382,8 @@ func (ms *Metrics) discoverFromPods() {
 	}
 }
 
-func (ms *Metrics) resolveDatabases(databases []config.Database) []config.ApplicationInstrumentation {
-	var res []config.ApplicationInstrumentation
+func (ms *Metrics) resolveDatabases(databases []config.Database) []*Target {
+	var res []*Target
 	for _, d := range databases {
 		var endpoints []common.Endpoint
 		var description string
@@ -424,6 +444,38 @@ func (ms *Metrics) resolveDatabases(databases []config.Database) []config.Applic
 				klog.Warningf("%s: the Memorystore instance is not discovered (yet), skipping", description)
 				continue
 			}
+		case d.OCIDB != "":
+			description = "ocidb:" + d.OCIDB
+			if ms.oci == nil {
+				klog.Warningf("%s: the OCI integration is not configured, skipping", description)
+				continue
+			}
+			if _, ok := ms.oci.DBEndpoint(d.OCIDB); !ok {
+				klog.Warningf("%s: the DB system is not discovered (yet), skipping", description)
+				continue
+			}
+			for _, name := range append([]string{d.OCIDB}, ms.oci.DBReplicas(d.OCIDB)...) { // read replicas and standby instances share the credentials
+				if e, ok := ms.oci.DBEndpoint(name); ok {
+					targets := ms.databaseTargets(d, "ocidb:"+name, []common.Endpoint{e})
+					for _, t := range targets {
+						t.LogService = ms.oci.DBLogService(name)
+					}
+					res = append(res, targets...)
+				}
+			}
+			continue
+		case d.OCICache != "":
+			description = "ocicache:" + d.OCICache
+			if ms.oci == nil {
+				klog.Warningf("%s: the OCI integration is not configured, skipping", description)
+				continue
+			}
+			e, ok := ms.oci.CacheEndpoint(d.OCICache)
+			if !ok {
+				klog.Warningf("%s: the cache cluster is not discovered (yet), skipping", description)
+				continue
+			}
+			endpoints = []common.Endpoint{e}
 		default:
 			description = d.Host
 			endpoints = []common.Endpoint{{Host: d.Host, Port: d.Port}}
@@ -433,22 +485,36 @@ func (ms *Metrics) resolveDatabases(databases []config.Database) []config.Applic
 	return res
 }
 
-func (ms *Metrics) databaseTargets(d config.Database, description string, endpoints []common.Endpoint) []config.ApplicationInstrumentation {
-	var res []config.ApplicationInstrumentation
+func (ms *Metrics) ociLogCounters(name string) []logparser.LogCounter {
+	ms.targetsLock.Lock()
+	defer ms.targetsLock.Unlock()
+	for _, t := range ms.targets {
+		if t.Description != "ocidb:"+name {
+			continue
+		}
+		if c, ok := t.collector().(*mysql.Collector); ok {
+			return c.ErrorLogCounters()
+		}
+	}
+	return nil
+}
+
+func (ms *Metrics) databaseTargets(d config.Database, description string, endpoints []common.Endpoint) []*Target {
+	var res []*Target
 	for _, e := range endpoints {
 		port := e.Port
 		if d.Port != "" {
 			port = d.Port
 		}
 		for _, ip := range resolveHost(e.Host) {
-			res = append(res, config.ApplicationInstrumentation{
+			res = append(res, TargetFromConfig(config.ApplicationInstrumentation{
 				Type:        d.Type,
 				Host:        ip,
 				Port:        port,
 				Credentials: d.Credentials,
 				Params:      d.Params,
 				Instance:    description,
-			})
+			}))
 		}
 	}
 	return res
@@ -473,10 +539,9 @@ func resolveHost(host string) []string {
 	return ips
 }
 
-func (ms *Metrics) discoverFromConfig(instrumentation []config.ApplicationInstrumentation) {
+func (ms *Metrics) discoverFromConfig(targets []*Target) {
 	actual := map[string]bool{}
-	for _, i := range instrumentation {
-		target := TargetFromConfig(i)
+	for _, target := range targets {
 		actual[target.Addr] = true
 		ms.targetsLock.Lock()
 		t := ms.targets[target.Addr]
@@ -494,9 +559,9 @@ func (ms *Metrics) discoverFromConfig(instrumentation []config.ApplicationInstru
 		}
 	}
 	ms.targetsLock.Lock()
-	targets := maps.Values(ms.targets)
+	existing := maps.Values(ms.targets)
 	ms.targetsLock.Unlock()
-	for _, t := range targets {
+	for _, t := range existing {
 		if !actual[t.Addr] && !t.DiscoveredFromPodAnnotations {
 			ms.delTarget(t)
 		}

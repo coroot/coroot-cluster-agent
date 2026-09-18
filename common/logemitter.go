@@ -7,7 +7,13 @@ import (
 	"github.com/coroot/logparser"
 	"go.opentelemetry.io/otel/log"
 	sdk "go.opentelemetry.io/otel/sdk/log"
+	semconv "go.opentelemetry.io/otel/semconv/v1.32.0"
 	"k8s.io/klog"
+)
+
+const (
+	MultilineCollectorTimeout = time.Second
+	LogPatternsPerLevel       = 256
 )
 
 type LogEmitter struct {
@@ -15,8 +21,8 @@ type LogEmitter struct {
 	logger   log.Logger
 }
 
-func NewLogEmitter(serviceName string) (*LogEmitter, error) {
-	provider, err := NewLoggerProvider(serviceName)
+func NewLogEmitter(serviceName, hostName string) (*LogEmitter, error) {
+	provider, err := NewLoggerProvider(serviceName, semconv.HostName(hostName))
 	if err != nil {
 		return nil, err
 	}
@@ -24,7 +30,7 @@ func NewLogEmitter(serviceName string) (*LogEmitter, error) {
 }
 
 func (e *LogEmitter) Callback() logparser.OnMsgCallbackF {
-	return func(ts time.Time, level logparser.Level, patternHash string, msg string) {
+	return func(ts time.Time, level logparser.Level, patternHash string, msg string, attributes map[string]string) {
 		if ts.IsZero() {
 			ts = time.Now()
 		}
@@ -35,6 +41,9 @@ func (e *LogEmitter) Callback() logparser.OnMsgCallbackF {
 		record.SetBody(log.StringValue(msg))
 		if patternHash != "" {
 			record.AddAttributes(log.String("pattern.hash", patternHash))
+		}
+		for k, v := range attributes {
+			record.AddAttributes(log.String(k, v))
 		}
 		e.logger.Emit(context.TODO(), record)
 	}

@@ -35,7 +35,7 @@ func NewLogReader(discoverer *Discoverer, instance string, forward bool) *LogRea
 	}
 	var onMsg logparser.OnMsgCallbackF
 	if forward {
-		emitter, err := common.NewLogEmitter("/gcp/cloudsql/" + discoverer.project + "/" + instance)
+		emitter, err := common.NewLogEmitter("/gcp/cloudsql/"+discoverer.project+"/"+instance, "cloudsql:"+instance)
 		if err != nil {
 			klog.Errorln("failed to create the log emitter, logs won't be forwarded:", err)
 		} else {
@@ -43,7 +43,7 @@ func NewLogReader(discoverer *Discoverer, instance string, forward bool) *LogRea
 			onMsg = emitter.Callback()
 		}
 	}
-	r.parser = logparser.NewParser(r.ch, nil, onMsg)
+	r.parser = logparser.NewParser(r.ch, nil, onMsg, common.MultilineCollectorTimeout, common.LogPatternsPerLevel, false, nil)
 	go func() {
 		t := time.NewTicker(logsRefreshInterval)
 		defer t.Stop()
@@ -71,9 +71,6 @@ func (r *LogReader) Counters() []logparser.LogCounter {
 	return r.parser.GetCounters()
 }
 
-// refresh fetches the entries received by Cloud Logging since the previous call. The cursor is the receive time, not
-// the entry timestamp: Cloud SQL ships logs with a delay of up to a minute, so an entry can show up after a newer one
-// has already been fetched.
 func (r *LogReader) refresh() {
 	d := r.discoverer
 	filter := fmt.Sprintf(`resource.type="cloudsql_database" AND resource.labels.database_id="%s:%s" AND receiveTimestamp>="%s"`,

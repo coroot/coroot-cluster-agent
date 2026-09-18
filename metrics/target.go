@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
@@ -65,11 +66,25 @@ type Target struct {
 	Params            map[string]string
 
 	Description                  string
+	LogService                   string // the service the logs read from the database server (e.g. the MySQL error log) are forwarded as, if any
 	DiscoveredFromPodAnnotations bool
 
-	coll   prometheus.Collector
-	stop   func()
-	logger logger.Logger
+	coll     prometheus.Collector
+	collLock sync.Mutex
+	stop     func()
+	logger   logger.Logger
+}
+
+func (t *Target) collector() prometheus.Collector {
+	t.collLock.Lock()
+	defer t.collLock.Unlock()
+	return t.coll
+}
+
+func (t *Target) setCollector(c prometheus.Collector) {
+	t.collLock.Lock()
+	defer t.collLock.Unlock()
+	t.coll = c
 }
 
 func (t *Target) Equal(other *Target) bool {
@@ -78,6 +93,7 @@ func (t *Target) Equal(other *Target) bool {
 		t.Credentials == other.Credentials &&
 		t.CredentialsSecret == other.CredentialsSecret &&
 		t.TLSSecret == other.TLSSecret &&
+		t.LogService == other.LogService &&
 		maps.Equal(t.Params, other.Params)
 }
 
@@ -86,9 +102,9 @@ func (t *Target) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (t *Target) Collect(ch chan<- prometheus.Metric) {
-	if t.coll != nil {
+	if coll := t.collector(); coll != nil {
 		start := time.Now()
-		t.coll.Collect(ch)
+		coll.Collect(ch)
 		t.logger.Info("metrics collection completed in", time.Since(start).Truncate(time.Millisecond))
 	}
 }
@@ -102,7 +118,7 @@ func (t *Target) String() string {
 }
 
 func (t *Target) IsExporterStarted() bool {
-	return t.coll != nil
+	return t.collector() != nil
 }
 
 func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, tlsCreds common.TLSCredentials, scrapeInterval, scrapeTimeout time.Duration, changeEmitter *emitter.ChangeEmitter, maxTablesPerDB int, trackSizes, trackBloat bool, excludeDatabases []string) error {
@@ -143,7 +159,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			}
 			return err
 		}
-		t.coll = collector
+		t.setCollector(collector)
 		t.stop = func() {
 			_ = collector.Close()
 			if pqTLSName != "" {
@@ -181,7 +197,10 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			}
 			return err
 		}
-		t.coll = collector
+		if t.LogService != "" {
+			collector.StartErrorLog(t.LogService, t.Description)
+		}
+		t.setCollector(collector)
 		t.stop = func() {
 			_ = collector.Close()
 			if tlsConfigName != "" {
@@ -190,7 +209,6 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 		}
 
 	case TargetTypeRedis:
-		dsn := fmt.Sprintf("redis://%s", t.Addr)
 		opts := redis.Options{
 			User:                           credentials.Username,
 			Password:                       credentials.Password,
@@ -199,14 +217,24 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			RedisMetricsOnly:               true,
 			ExcludeLatencyHistogramMetrics: true,
 		}
-		if strings.Contains(t.Description, "elasticache:") || strings.Contains(t.Description, "memorystore:") { // managed services don't allow the CONFIG command
+		if strings.Contains(t.Description, "elasticache:") || strings.Contains(t.Description, "memorystore:") || strings.Contains(t.Description, "ocicache:") { // managed services don't allow the CONFIG command
 			opts.ConfigCommandName = "-"
 		}
+		tls := t.Params["tls"]
+		if tls == "" && strings.Contains(t.Description, "ocicache:") {
+			tls = "skip-verify"
+		}
+		scheme := "redis"
+		if tls != "" {
+			scheme = "rediss"
+			opts.SkipTLSVerification = tls == "skip-verify"
+		}
+		dsn := fmt.Sprintf("%s://%s", scheme, t.Addr)
 		collector, err := redis.NewRedisExporter(dsn, opts)
 		if err != nil {
 			return err
 		}
-		t.coll = collector
+		t.setCollector(collector)
 		t.stop = func() {}
 
 	case TargetTypeMongodb:
@@ -224,7 +252,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			maxTablesPerDB,
 			trackSizes,
 		)
-		t.coll = collector
+		t.setCollector(collector)
 		t.stop = func() { _ = collector.Close() }
 
 	case TargetTypeMemcached:
@@ -234,7 +262,7 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 			level.NewFilter(&promLogger{l: t.logger}, level.AllowInfo()),
 			nil,
 		)
-		t.coll = collector
+		t.setCollector(collector)
 		t.stop = func() {}
 
 	default:
@@ -245,12 +273,12 @@ func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials
 }
 
 func (t *Target) StopExporter(reg *prometheus.Registry) {
-	if t.coll != nil {
+	if t.collector() != nil {
 		prometheus.WrapRegistererWith(t.Labels(), reg).Unregister(t)
 		if t.stop != nil {
 			t.stop()
 		}
-		t.coll = nil
+		t.setCollector(nil)
 	}
 }
 
