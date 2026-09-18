@@ -65,7 +65,7 @@ func (d *Discoverer) discoverMemorystore() {
 
 	seen := map[string]bool{}
 	for _, info := range found {
-		if !labelsMatched(d.cfg.MemorystoreLabelFilters, info.labels) {
+		if !common.LabelsMatched(d.cfg.MemorystoreLabelFilters, info.labels) {
 			klog.Infof("Memorystore instance %s (labels: %s) was skipped according to the label-based filters: %s", info.id, info.labels, d.cfg.MemorystoreLabelFilters)
 			continue
 		}

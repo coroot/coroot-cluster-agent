@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/coroot/coroot-cluster-agent/flags"
@@ -109,6 +110,15 @@ func SplitHostPort(addr string) (host string, port int, err error) {
 		return "", 0, err
 	}
 	return host, port, nil
+}
+
+func LabelsMatched(filters, labels map[string]string) bool {
+	for name, desired := range filters {
+		if matched, _ := filepath.Match(desired, labels[name]); !matched {
+			return false
+		}
+	}
+	return true
 }
 
 type Endpoint struct {
