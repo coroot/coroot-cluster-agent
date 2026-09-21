@@ -6,14 +6,26 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/coroot-cluster-agent/metrics/dbtracker"
 	"github.com/coroot/coroot-cluster-agent/schema"
 	"github.com/coroot/logger"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+const (
+	writtenCollectionsN = 50
+	maxCollectionsN     = 500
 )
 
 var mongoSystemDBs = map[string]bool{"admin": true, "config": true, "local": true}
+
+type databaseInfo struct {
+	Name       string  `bson:"name"`
+	SizeOnDisk float64 `bson:"sizeOnDisk"`
+}
 
 type databaseTracker struct {
 	*dbtracker.Tracker
@@ -22,6 +34,8 @@ type databaseTracker struct {
 	trackSchema    bool
 	trackSizes     bool
 	logger         logger.Logger
+
+	prevWrites map[string]float64
 }
 
 func newDatabaseTracker(maxTablesPerDB int, trackSchema, trackSizes bool, logger logger.Logger) *databaseTracker {
@@ -36,80 +50,134 @@ func newDatabaseTracker(maxTablesPerDB int, trackSchema, trackSizes bool, logger
 }
 
 func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot, map[string]*dbtracker.DBSizeSnapshot, error) {
-	client := dt.client
-	if client == nil {
+	if dt.client == nil {
 		return nil, nil, fmt.Errorf("no mongo client")
 	}
 
 	var listResult struct {
-		Databases []struct {
-			Name       string  `bson:"name"`
-			SizeOnDisk float64 `bson:"sizeOnDisk"`
-		} `bson:"databases"`
+		Databases []databaseInfo `bson:"databases"`
 	}
-	res := client.Database("admin").RunCommand(ctx, bson.D{{Key: "listDatabases", Value: 1}})
+	res := dt.client.Database("admin").RunCommand(ctx, bson.D{{Key: "listDatabases", Value: 1}})
 	if err := res.Decode(&listResult); err != nil {
 		return nil, nil, fmt.Errorf("listDatabases: %w", err)
 	}
-
-	snapshot := schema.Snapshot{}
 	dbSizes := map[string]*dbtracker.DBSizeSnapshot{}
-
+	var databases []databaseInfo
 	for _, db := range listResult.Databases {
 		if mongoSystemDBs[db.Name] {
 			continue
 		}
 		dbSizes[db.Name] = &dbtracker.DBSizeSnapshot{DatabaseSize: db.SizeOnDisk}
+		databases = append(databases, db)
+	}
 
-		database := client.Database(db.Name)
-		collNames, err := database.ListCollectionNames(ctx, bson.D{{Key: "type", Value: "collection"}})
+	if dt.trackSizes {
+		for _, t := range dt.collectionSizes(ctx, databases) {
+			if snap := dbSizes[t.DB]; snap != nil {
+				snap.Tables = append(snap.Tables, t)
+			}
+		}
+	}
+
+	var snapshot schema.Snapshot
+	if dt.trackSchema {
+		var err error
+		if snapshot, err = dt.indexes(ctx); err != nil {
+			dt.logger.Warning("failed to get index definitions:", err)
+		}
+	}
+	return snapshot, dbSizes, nil
+}
+
+func (dt *databaseTracker) collectionSizes(ctx context.Context, databases []databaseInfo) []dbtracker.TableSizeEntry {
+	var tables []dbtracker.TableSizeEntry
+	seen := map[schema.TableKey]bool{}
+	collect := func(key schema.TableKey) {
+		if seen[key] || len(seen) >= maxCollectionsN || ctx.Err() != nil {
+			return
+		}
+		seen[key] = true
+		stats, err := collStorage(ctx, dt.client.Database(key.DB), key.Table)
+		if err != nil {
+			dt.logger.Warning("collStats for", key.DB+"."+key.Table+":", err)
+			return
+		}
+		tables = append(tables, dbtracker.TableSizeEntry{
+			TableKey:    key,
+			Size:        stats.TotalSize,
+			StorageSize: stats.StorageSize,
+			FreeStorage: stats.FreeStorageSize,
+			Documents:   stats.Count,
+		})
+	}
+
+	written, err := dt.writtenCollections(ctx)
+	if err != nil {
+		dt.logger.Warning("top:", err)
+	}
+	for _, key := range written {
+		collect(key)
+	}
+
+	sort.Slice(databases, func(i, j int) bool { return databases[i].SizeOnDisk > databases[j].SizeOnDisk })
+	for _, db := range databases {
+		if len(seen) >= maxCollectionsN || ctx.Err() != nil {
+			break
+		}
+		names, err := dt.client.Database(db.Name).ListCollectionNames(ctx, bson.D{{Key: "type", Value: "collection"}}, options.ListCollections().SetAuthorizedCollections(true))
 		if err != nil {
 			dt.logger.Warning("list collections for", db.Name+":", err)
 			continue
 		}
-
-		if dt.maxTablesPerDB > 0 && len(collNames) > dt.maxTablesPerDB {
-			dt.logger.Warningf("database %s has %d collections (limit %d), skipping", db.Name, len(collNames), dt.maxTablesPerDB)
+		if dt.maxTablesPerDB > 0 && len(names) > dt.maxTablesPerDB {
+			dt.logger.Warningf("database %s has %d collections (limit %d), skipping", db.Name, len(names), dt.maxTablesPerDB)
 			continue
 		}
-
-		var tables []dbtracker.TableSizeEntry
-
-		for _, collName := range collNames {
-			if strings.HasPrefix(collName, "system.") {
-				continue
+		for _, name := range names {
+			if !strings.HasPrefix(name, "system.") {
+				collect(schema.TableKey{DB: db.Name, Table: name})
 			}
-			if dt.trackSizes {
-				stats, err := collStorage(ctx, database, collName)
-				if err != nil {
-					dt.logger.Warning("collStats for", db.Name+"."+collName+":", err)
-				} else {
-					tables = append(tables, dbtracker.TableSizeEntry{
-						TableKey:    schema.TableKey{DB: db.Name, Table: collName},
-						Size:        stats.TotalSize,
-						StorageSize: stats.StorageSize,
-						FreeStorage: stats.FreeStorageSize,
-						Documents:   stats.Count,
-					})
-				}
-			}
-
-			if dt.trackSchema {
-				text, err := indexSnapshot(ctx, database.Collection(collName))
-				if err != nil {
-					dt.logger.Warning("list indexes for", db.Name+"."+collName+":", err)
-					continue
-				}
-				snapshot[schema.TableKey{DB: db.Name, Table: collName}] = text
-			}
-		}
-
-		if dt.trackSizes {
-			dbSizes[db.Name].Tables = tables
 		}
 	}
+	return tables
+}
 
-	return snapshot, dbSizes, nil
+func (dt *databaseTracker) writtenCollections(ctx context.Context) ([]schema.TableKey, error) {
+	var top struct {
+		Totals map[string]bson.Raw `bson:"totals"`
+	}
+	if err := dt.client.Database("admin").RunCommand(ctx, bson.D{{Key: "top", Value: 1}}).Decode(&top); err != nil {
+		return nil, err
+	}
+	type counter struct {
+		Count float64 `bson:"count"`
+	}
+	type written struct {
+		key    schema.TableKey
+		writes float64
+	}
+	curr := map[string]float64{}
+	var res []written
+	for ns, raw := range top.Totals {
+		db, coll, _ := strings.Cut(ns, ".")
+		var c struct {
+			Insert, Update, Remove counter
+		}
+		if mongoSystemDBs[db] || strings.HasPrefix(coll, "system.") || bson.Unmarshal(raw, &c) != nil {
+			continue
+		}
+		curr[ns] = c.Insert.Count + c.Update.Count + c.Remove.Count
+		if prev, ok := dt.prevWrites[ns]; ok && curr[ns] > prev {
+			res = append(res, written{key: schema.TableKey{DB: db, Table: coll}, writes: curr[ns] - prev})
+		}
+	}
+	dt.prevWrites = curr
+
+	var keys []schema.TableKey
+	for _, w := range common.TopN(res, writtenCollectionsN, func(a, b written) bool { return a.writes > b.writes }) {
+		keys = append(keys, w.key)
+	}
+	return keys, nil
 }
 
 type collStorageStatsRaw struct {
@@ -123,6 +191,13 @@ type collStorageStatsRaw struct {
 func collStorage(ctx context.Context, database *mongo.Database, collName string) (*collStorageStatsRaw, error) {
 	cursor, err := database.Collection(collName).Aggregate(ctx, bson.A{
 		bson.D{{Key: "$collStats", Value: bson.D{{Key: "storageStats", Value: bson.D{}}}}},
+		bson.D{{Key: "$project", Value: bson.D{
+			{Key: "storageStats.size", Value: 1},
+			{Key: "storageStats.storageSize", Value: 1},
+			{Key: "storageStats.freeStorageSize", Value: 1},
+			{Key: "storageStats.totalSize", Value: 1},
+			{Key: "storageStats.count", Value: 1},
+		}}},
 	})
 	if err != nil {
 		return nil, err
@@ -143,50 +218,58 @@ func collStorage(ctx context.Context, database *mongo.Database, collName string)
 	return &doc.StorageStats, nil
 }
 
-func indexSnapshot(ctx context.Context, coll *mongo.Collection) (string, error) {
-	cursor, err := coll.Indexes().List(ctx)
+func (dt *databaseTracker) indexes(ctx context.Context) (schema.Snapshot, error) {
+	cursor, err := dt.client.Database("admin").Aggregate(ctx, bson.A{
+		bson.D{{Key: "$listCatalog", Value: bson.D{}}},
+		bson.D{{Key: "$match", Value: bson.D{{Key: "type", Value: "collection"}}}},
+		bson.D{{Key: "$project", Value: bson.D{
+			{Key: "db", Value: 1},
+			{Key: "name", Value: 1},
+			{Key: "md.indexes.ready", Value: 1},
+			{Key: "md.indexes.spec.name", Value: 1},
+			{Key: "md.indexes.spec.key", Value: 1},
+		}}},
+	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer cursor.Close(ctx)
 
-	type indexEntry struct {
-		Name string
-		Keys string
-	}
-	var entries []indexEntry
+	snapshot := schema.Snapshot{}
 	for cursor.Next(ctx) {
-		var idx struct {
+		var coll struct {
+			DB   string `bson:"db"`
 			Name string `bson:"name"`
-			Key  bson.M `bson:"key"`
+			MD   struct {
+				Indexes []struct {
+					Ready bool `bson:"ready"`
+					Spec  struct {
+						Name string `bson:"name"`
+						Key  bson.M `bson:"key"`
+					} `bson:"spec"`
+				} `bson:"indexes"`
+			} `bson:"md"`
 		}
-		if err := cursor.Decode(&idx); err != nil {
-			return "", err
+		if err = cursor.Decode(&coll); err != nil {
+			return nil, err
 		}
-		fields := make([]string, 0, len(idx.Key))
-		for k := range idx.Key {
-			fields = append(fields, k)
+		if mongoSystemDBs[coll.DB] || strings.HasPrefix(coll.Name, "system.") {
+			continue
 		}
-		sort.Strings(fields)
-		var keyBuf strings.Builder
-		keyBuf.WriteByte('{')
-		for i, f := range fields {
-			if i > 0 {
-				keyBuf.WriteByte(',')
+		var lines []string
+		for _, idx := range coll.MD.Indexes {
+			if !idx.Ready {
+				continue
 			}
-			fmt.Fprintf(&keyBuf, "%q:%v", f, idx.Key[f])
+			fields := make([]string, 0, len(idx.Spec.Key))
+			for k, v := range idx.Spec.Key {
+				fields = append(fields, fmt.Sprintf("%q:%v", k, v))
+			}
+			sort.Strings(fields)
+			lines = append(lines, fmt.Sprintf("INDEX %s: {%s}\n", idx.Spec.Name, strings.Join(fields, ",")))
 		}
-		keyBuf.WriteByte('}')
-		entries = append(entries, indexEntry{Name: idx.Name, Keys: keyBuf.String()})
+		sort.Strings(lines)
+		snapshot[schema.TableKey{DB: coll.DB, Table: coll.Name}] = strings.Join(lines, "")
 	}
-	if err := cursor.Err(); err != nil {
-		return "", err
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-
-	var buf strings.Builder
-	for _, e := range entries {
-		fmt.Fprintf(&buf, "INDEX %s: %s\n", e.Name, e.Keys)
-	}
-	return buf.String(), nil
+	return snapshot, cursor.Err()
 }
