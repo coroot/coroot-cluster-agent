@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -237,6 +238,12 @@ func (c *Collector) snapshot() {
 		c.scrapeErrors[err.Error()] = true
 		return
 	}
+	if !minSupportedVersion(version) {
+		err = fmt.Errorf("postgres version %s is not supported (minimum is %s)", c.origVersion, minVersion)
+		c.logger.Warning(err)
+		c.scrapeErrors[err.Error()] = true
+		return
+	}
 
 	if c.settings, err = c.getSettings(ctx); err != nil {
 		c.scrapeErrors[err.Error()] = true
@@ -258,7 +265,7 @@ func (c *Collector) snapshot() {
 		c.logger.Warning(err)
 	}
 
-	if err = c.getWraparoundStats(ctx, version); err != nil {
+	if err = c.getWraparoundStats(ctx); err != nil {
 		c.scrapeErrors[err.Error()] = true
 		c.logger.Warning(err)
 	}

@@ -3,8 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-
-	"github.com/blang/semver"
 )
 
 type wraparoundStats struct {
@@ -13,7 +11,7 @@ type wraparoundStats struct {
 	xminAgeByHolder map[string]float64
 }
 
-func (c *Collector) getWraparoundStats(ctx context.Context, version semver.Version) error {
+func (c *Collector) getWraparoundStats(ctx context.Context) error {
 	ws := &wraparoundStats{
 		xidAge:          map[string]float64{},
 		multixactAge:    map[string]float64{},
@@ -43,21 +41,19 @@ func (c *Collector) getWraparoundStats(ctx context.Context, version semver.Versi
 		}
 	}
 
-	if semver.MustParseRange(">=10.0.0")(version) {
-		var running, standby, slot, prepared sql.Null[int64]
-		if err := c.db.QueryRowContext(ctx, `SELECT
-			(SELECT COALESCE(max(age(backend_xmin)), 0) FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND backend_type = 'client backend'),
-			(SELECT COALESCE(max(age(backend_xmin)), 0) FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND backend_type = 'walsender'),
-			(SELECT COALESCE(max(GREATEST(age(xmin), age(catalog_xmin))), 0) FROM pg_replication_slots),
-			(SELECT COALESCE(max(age(transaction)), 0) FROM pg_prepared_xacts)`,
-		).Scan(&running, &standby, &slot, &prepared); err != nil {
-			c.logger.Warning(err)
-		} else {
-			ws.xminAgeByHolder["running_transaction"] = float64(running.V)
-			ws.xminAgeByHolder["standby_feedback"] = float64(standby.V)
-			ws.xminAgeByHolder["replication_slot"] = float64(slot.V)
-			ws.xminAgeByHolder["prepared_transaction"] = float64(prepared.V)
-		}
+	var running, standby, slot, prepared sql.Null[int64]
+	if err := c.db.QueryRowContext(ctx, `SELECT
+		(SELECT COALESCE(max(age(backend_xmin)), 0) FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND backend_type = 'client backend'),
+		(SELECT COALESCE(max(age(backend_xmin)), 0) FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND backend_type = 'walsender'),
+		(SELECT COALESCE(max(GREATEST(age(xmin), age(catalog_xmin))), 0) FROM pg_replication_slots),
+		(SELECT COALESCE(max(age(transaction)), 0) FROM pg_prepared_xacts)`,
+	).Scan(&running, &standby, &slot, &prepared); err != nil {
+		c.logger.Warning(err)
+	} else {
+		ws.xminAgeByHolder["running_transaction"] = float64(running.V)
+		ws.xminAgeByHolder["standby_feedback"] = float64(standby.V)
+		ws.xminAgeByHolder["replication_slot"] = float64(slot.V)
+		ws.xminAgeByHolder["prepared_transaction"] = float64(prepared.V)
 	}
 
 	c.wraparound = ws

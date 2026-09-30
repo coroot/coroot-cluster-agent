@@ -9,6 +9,10 @@ import (
 
 var trimVersionRe = regexp.MustCompile("[^0-9.].*")
 
+const minVersion = "10"
+
+var minSupportedVersion = semver.MustParseRange(">=" + minVersion + ".0.0")
+
 func parsePgVersion(v string) (string, semver.Version, error) {
 	original := strings.Fields(v)[0]
 	version, err := semver.ParseTolerant(trimVersionRe.ReplaceAllString(v, ""))

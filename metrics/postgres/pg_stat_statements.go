@@ -37,7 +37,7 @@ func (c *Collector) getStatStatements(ctx context.Context, version semver.Versio
 	snapshot := &ssSnapshot{ts: time.Now(), rows: map[statementId]ssRow{}}
 	var query string
 	switch {
-	case semver.MustParseRange(">=9.4.0 <13.0.0")(version):
+	case semver.MustParseRange(">=10.0.0 <13.0.0")(version):
 		query = `SELECT d.datname, r.rolname, LEFT(s.query, %d), s.queryid, s.calls, s.total_time, s.blk_read_time + s.blk_write_time`
 	case semver.MustParseRange(">=13.0.0 <17.0.0")(version):
 		query = `SELECT d.datname, r.rolname, LEFT(s.query, %d), s.queryid, s.calls, s.total_plan_time + s.total_exec_time, s.blk_read_time + s.blk_write_time`

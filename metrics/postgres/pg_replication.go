@@ -70,12 +70,6 @@ func (c *Collector) getReplicationStatus(ctx context.Context, version semver.Ver
 
 	var fCurrentLsn, fReceiveLsn, fReplyLsn, fIsReplayPaused string
 	switch {
-	// the `pg_stat_wal_receiver` view has been introduced in 9.6
-	case semver.MustParseRange(">=9.6.0 <10.0.0")(version):
-		fCurrentLsn = "pg_current_xlog_location"
-		fReceiveLsn = "pg_last_xlog_receive_location"
-		fReplyLsn = "pg_last_xlog_replay_location"
-		fIsReplayPaused = "pg_is_xlog_replay_paused"
 	case semver.MustParseRange(">=10.0.0")(version):
 		fCurrentLsn = "pg_current_wal_lsn"
 		fReceiveLsn = "pg_last_wal_receive_lsn"
