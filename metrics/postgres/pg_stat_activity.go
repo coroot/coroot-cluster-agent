@@ -41,12 +41,8 @@ func (c *Collector) getPgStatActivity(ctx context.Context, version semver.Versio
 	snapshot := &saSnapshot{connections: map[int]Connection{}}
 	var query string
 	switch {
-	case semver.MustParseRange(">=9.3.0 <9.6.0")(version):
-		query = "SELECT s.pid, s.datname, s.usename, LEFT(s.query, %d), s.state, now(), s.query_start, s.waiting, null, null, null, EXTRACT(EPOCH FROM (now() - s.xact_start))"
-	case semver.MustParseRange(">=9.6.0 <10.0.0")(version):
-		query = "SELECT s.pid, s.datname, s.usename, LEFT(s.query, %d), s.state, now(), s.query_start, null, s.wait_event_type, null, (pg_blocking_pids(s.pid))[1], EXTRACT(EPOCH FROM (now() - s.xact_start))"
 	case semver.MustParseRange(">=10.0.0")(version):
-		query = "SELECT s.pid, s.datname, s.usename, LEFT(s.query, %d), s.state, now(), s.query_start, null, s.wait_event_type, s.backend_type, (pg_blocking_pids(s.pid))[1], EXTRACT(EPOCH FROM (now() - s.xact_start))"
+		query = "SELECT s.pid, s.datname, s.usename, LEFT(s.query, %d), s.state, now(), s.query_start, s.wait_event_type, s.backend_type, (pg_blocking_pids(s.pid))[1], EXTRACT(EPOCH FROM (now() - s.xact_start))"
 	default:
 		return nil, fmt.Errorf("postgres version %s is not supported", version)
 	}
@@ -59,13 +55,12 @@ func (c *Collector) getPgStatActivity(ctx context.Context, version semver.Versio
 
 	for rows.Next() {
 		var (
-			conn            Connection
-			pid             int
-			oldStyleWaiting sql.NullBool
+			conn Connection
+			pid  int
 		)
 		err := rows.Scan(
 			&pid, &conn.DB, &conn.User, &conn.Query, &conn.State, &snapshot.ts, &conn.QueryStart,
-			&oldStyleWaiting, &conn.WaitEventType, &conn.BackendType, &conn.BlockingPid, &conn.XactSeconds,
+			&conn.WaitEventType, &conn.BackendType, &conn.BlockingPid, &conn.XactSeconds,
 		)
 		if err != nil {
 			c.logger.Warning("failed to scan pg_stat_activity row:", err)
@@ -76,9 +71,6 @@ func (c *Collector) getPgStatActivity(ctx context.Context, version semver.Versio
 		}
 		if conn.DB.String == "" || conn.User.String == "" || conn.State.String == "" || c.excludeDatabases[conn.DB.String] {
 			continue
-		}
-		if oldStyleWaiting.Bool {
-			conn.WaitEventType.String = "Lock"
 		}
 		if conn.State.String != "active" && !strings.HasPrefix(conn.State.String, "idle in transaction") {
 			conn.Query.String = ""
