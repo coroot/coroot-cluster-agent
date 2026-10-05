@@ -24,6 +24,8 @@ type LogReader struct {
 	stop       chan struct{}
 }
 
+const logSourceCloudLogging = "gcp_logging"
+
 func NewLogReader(discoverer *Discoverer, instance string, forward bool) *LogReader {
 	r := &LogReader{
 		discoverer: discoverer,
@@ -35,7 +37,7 @@ func NewLogReader(discoverer *Discoverer, instance string, forward bool) *LogRea
 	}
 	var onMsg logparser.OnMsgCallbackF
 	if forward {
-		emitter, err := common.NewLogEmitter("/gcp/cloudsql/"+discoverer.project+"/"+instance, "cloudsql:"+instance)
+		emitter, err := common.NewLogEmitter("/gcp/cloudsql/"+discoverer.project+"/"+instance, "cloudsql:"+instance, logSourceCloudLogging)
 		if err != nil {
 			klog.Errorln("failed to create the log emitter, logs won't be forwarded:", err)
 		} else {

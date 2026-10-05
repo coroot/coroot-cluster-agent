@@ -14,19 +14,21 @@ import (
 const (
 	MultilineCollectorTimeout = time.Second
 	LogPatternsPerLevel       = 256
+	LogSourceAttribute        = "log.source"
 )
 
 type LogEmitter struct {
 	provider *sdk.LoggerProvider
 	logger   log.Logger
+	source   string
 }
 
-func NewLogEmitter(serviceName, hostName string) (*LogEmitter, error) {
+func NewLogEmitter(serviceName, hostName, source string) (*LogEmitter, error) {
 	provider, err := NewLoggerProvider(serviceName, semconv.HostName(hostName))
 	if err != nil {
 		return nil, err
 	}
-	return &LogEmitter{provider: provider, logger: provider.Logger("coroot-cluster-agent")}, nil
+	return &LogEmitter{provider: provider, logger: provider.Logger("coroot-cluster-agent"), source: source}, nil
 }
 
 func (e *LogEmitter) Callback() logparser.OnMsgCallbackF {
@@ -41,6 +43,9 @@ func (e *LogEmitter) Callback() logparser.OnMsgCallbackF {
 		record.SetBody(log.StringValue(msg))
 		if patternHash != "" {
 			record.AddAttributes(log.String("pattern.hash", patternHash))
+		}
+		if e.source != "" {
+			record.AddAttributes(log.String(LogSourceAttribute, e.source))
 		}
 		for k, v := range attributes {
 			record.AddAttributes(log.String(k, v))

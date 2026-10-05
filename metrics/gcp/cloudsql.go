@@ -148,7 +148,7 @@ func (c *CloudSQLCollector) Collect(ch chan<- prometheus.Metric) {
 	c.discoverer.monitoring.collect(i.Name, ch)
 	if c.logs != nil {
 		for _, lc := range c.logs.Counters() {
-			ch <- common.Counter(dCloudSQLLogMessages, float64(lc.Messages), lc.Level.String(), lc.Hash, lc.Sample)
+			ch <- common.Counter(dCloudSQLLogMessages, float64(lc.Messages), logSourceCloudLogging, lc.Level.String(), lc.Hash, lc.Sample)
 		}
 	}
 }

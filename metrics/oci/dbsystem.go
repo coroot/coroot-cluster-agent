@@ -63,14 +63,16 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 	if i.monitoringID != i.id { // the series of the DB system itself go to the primary
 		c.discoverer.monitoring.collect(i.id, ch)
 	}
-	var counters []logparser.LogCounter
+	var counters map[string][]logparser.LogCounter
 	if c.logs != nil {
-		counters = c.logs.Counters()
+		counters = map[string][]logparser.LogCounter{LogSourceOCILogging: c.logs.Counters()}
 	} else if c.discoverer.logCounters != nil {
 		counters = c.discoverer.logCounters(i.name)
 	}
-	for _, lc := range counters {
-		ch <- common.Counter(dDBLogMessages, float64(lc.Messages), lc.Level.String(), lc.Hash, lc.Sample)
+	for source, lcs := range counters {
+		for _, lc := range lcs {
+			ch <- common.Counter(dDBLogMessages, float64(lc.Messages), source, lc.Level.String(), lc.Hash, lc.Sample)
+		}
 	}
 }
 

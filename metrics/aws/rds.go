@@ -46,8 +46,8 @@ var (
 	dRDSNetTx     = common.Desc("aws_rds_net_tx_bytes_per_second", "The number of bytes transmitted per second", "interface")
 
 	dRDSLogMessages = common.Desc("aws_rds_log_messages_total",
-		"Number of messages grouped by the automatically extracted repeated pattern",
-		"level", "pattern_hash", "sample")
+		"Number of messages in the instance's logs grouped by the automatically extracted repeated pattern",
+		"source", "level", "pattern_hash", "sample")
 )
 
 type RDSCollector struct {
@@ -62,6 +62,8 @@ type RDSCollector struct {
 	logEmitter *common.LogEmitter
 }
 
+const logSourceRDSLogFiles = "rds_log_files"
+
 func NewRDSCollector(discoverer *Discoverer, region string, instance *rdstypes.DBInstance) *RDSCollector {
 	c := &RDSCollector{discoverer: discoverer, region: region, instance: instance}
 
@@ -69,7 +71,7 @@ func NewRDSCollector(discoverer *Discoverer, region string, instance *rdstypes.D
 	case "postgres", "aurora-postgresql", "mysql", "mariadb", "aurora-mysql":
 		var onMsg logparser.OnMsgCallbackF
 		if *flags.CollectAWSLogs {
-			emitter, err := common.NewLogEmitter("/aws/rds/"+region+"/"+aws.ToString(c.instance.DBInstanceIdentifier), "rds:"+aws.ToString(c.instance.DBInstanceIdentifier))
+			emitter, err := common.NewLogEmitter("/aws/rds/"+region+"/"+aws.ToString(c.instance.DBInstanceIdentifier), "rds:"+aws.ToString(c.instance.DBInstanceIdentifier), logSourceRDSLogFiles)
 			if err != nil {
 				klog.Errorln("failed to create the log emitter, logs won't be forwarded:", err)
 			} else {
@@ -131,7 +133,7 @@ func (c *RDSCollector) Collect(ch chan<- prometheus.Metric) {
 
 	if c.logParser != nil {
 		for _, lc := range c.logParser.GetCounters() {
-			ch <- common.Counter(dRDSLogMessages, float64(lc.Messages), lc.Level.String(), lc.Hash, lc.Sample)
+			ch <- common.Counter(dRDSLogMessages, float64(lc.Messages), logSourceRDSLogFiles, lc.Level.String(), lc.Hash, lc.Sample)
 		}
 	}
 }

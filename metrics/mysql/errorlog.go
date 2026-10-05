@@ -12,7 +12,11 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-const errorLogRefreshInterval = 30 * time.Second
+const (
+	ErrorLogSource = "performance_schema.error_log"
+
+	errorLogRefreshInterval = 30 * time.Second
+)
 
 type ErrorLogReader struct {
 	db      *sql.DB
@@ -28,7 +32,7 @@ func (c *Collector) StartErrorLog(serviceName, hostName string) {
 	if c.errorLog != nil { // already started
 		return
 	}
-	emitter, err := common.NewLogEmitter(serviceName, hostName)
+	emitter, err := common.NewLogEmitter(serviceName, hostName, ErrorLogSource)
 	if err != nil {
 		c.logger.Warning("failed to create the log emitter, the error log won't be forwarded:", err)
 		return
@@ -56,13 +60,6 @@ func (c *Collector) StartErrorLog(serviceName, hostName string) {
 			}
 		}
 	}()
-}
-
-func (c *Collector) ErrorLogCounters() []logparser.LogCounter {
-	if c.errorLog == nil {
-		return nil
-	}
-	return c.errorLog.parser.GetCounters()
 }
 
 func (r *ErrorLogReader) Stop() {

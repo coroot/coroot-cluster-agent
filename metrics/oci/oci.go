@@ -41,14 +41,14 @@ var (
 	dDBStatus      = common.Desc("oci_db_status", "Status of the DB system", "status")
 	dDBCpuCores    = common.Desc("oci_db_cpu_cores", "Number of vCPUs of the DB system (2 per OCPU)")
 	dDBMemoryTotal = common.Desc("oci_db_memory_total_bytes", "Memory of the DB system")
-	dDBLogMessages = common.Desc("oci_db_log_messages_total", "Number of messages in the DB system's log grouped by the automatically extracted repeated pattern", "level", "pattern_hash", "sample")
+	dDBLogMessages = common.Desc("oci_db_log_messages_total", "Number of messages in the DB system's logs grouped by the automatically extracted repeated pattern", "source", "level", "pattern_hash", "sample")
 
 	dCacheInfo = common.Desc("oci_cache_info", "OCI Cache cluster info",
 		"name", "compartment", "region", "ipv4", "port", "engine", "engine_version", "node_count", "node_memory_gb",
 	)
 	dCacheStatus      = common.Desc("oci_cache_status", "Status of the cache cluster", "status")
 	dCacheMemoryTotal = common.Desc("oci_cache_memory_total_bytes", "Memory of a cache node")
-	dCacheLogMessages = common.Desc("oci_cache_log_messages_total", "Number of messages in the cache cluster's engine log grouped by the automatically extracted repeated pattern", "level", "pattern_hash", "sample")
+	dCacheLogMessages = common.Desc("oci_cache_log_messages_total", "Number of messages in the cache cluster's engine log grouped by the automatically extracted repeated pattern", "source", "level", "pattern_hash", "sample")
 )
 
 type Discoverer struct {
@@ -85,7 +85,7 @@ type Discoverer struct {
 	serviceLogsLock sync.RWMutex
 	serviceLogs     map[string]string
 
-	logCounters func(name string) []logparser.LogCounter // the log pattern counters of the DB systems whose logs are read by their database collectors (MySQL), by display name
+	logCounters func(name string) map[string][]logparser.LogCounter // the log pattern counters (by source) of the DB systems whose logs are read by their database collectors (MySQL), by display name
 }
 
 func (d *Discoverer) DBEndpoint(name string) (common.Endpoint, bool) {
@@ -114,7 +114,7 @@ func (d *Discoverer) CacheEndpoint(name string) (common.Endpoint, bool) {
 	return e, ok
 }
 
-func NewDiscoverer(cfg *config.OCIConfig, k8s *k8s.K8S, reg prometheus.Registerer, logCounters func(name string) []logparser.LogCounter) (*Discoverer, error) {
+func NewDiscoverer(cfg *config.OCIConfig, k8s *k8s.K8S, reg prometheus.Registerer, logCounters func(name string) map[string][]logparser.LogCounter) (*Discoverer, error) {
 	d := &Discoverer{
 		cfg:             cfg,
 		k8s:             k8s,

@@ -39,7 +39,7 @@ var (
 		"instance_type", "primary_instance",
 	)
 	dCloudSQLStatus      = common.Desc("gcp_cloudsql_status", "Status of the Cloud SQL instance", "status")
-	dCloudSQLLogMessages = common.Desc("gcp_cloudsql_log_messages_total", "Number of messages in the instance's logs grouped by the automatically extracted repeated pattern", "level", "pattern_hash", "sample")
+	dCloudSQLLogMessages = common.Desc("gcp_cloudsql_log_messages_total", "Number of messages in the instance's logs grouped by the automatically extracted repeated pattern", "source", "level", "pattern_hash", "sample")
 
 	dMemorystoreInfo = common.Desc("gcp_memorystore_info", "Memorystore instance info",
 		"project", "region", "zone", "ipv4", "port", "engine", "engine_version", "tier", "memory_size_gb", "instance",

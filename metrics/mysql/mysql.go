@@ -16,6 +16,7 @@ import (
 	"github.com/coroot/coroot-cluster-agent/schema"
 
 	"github.com/coroot/logger"
+	"github.com/coroot/logparser"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/pmezard/go-difflib/difflib"
 	"github.com/prometheus/client_golang/prometheus"
@@ -131,6 +132,14 @@ func (c *Collector) Close() error {
 		c.errorLog.Stop()
 	}
 	return c.db.Close()
+}
+
+func (c *Collector) LogCounters() map[string][]logparser.LogCounter {
+	res := map[string][]logparser.LogCounter{}
+	if c.errorLog != nil {
+		res[ErrorLogSource] = c.errorLog.parser.GetCounters()
+	}
+	return res
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {

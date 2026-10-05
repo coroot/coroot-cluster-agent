@@ -48,7 +48,7 @@ func (c *CacheCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 	c.discoverer.monitoring.collect(i.id, ch)
 	for _, lc := range c.logs.Counters() {
-		ch <- common.Counter(dCacheLogMessages, float64(lc.Messages), lc.Level.String(), lc.Hash, lc.Sample)
+		ch <- common.Counter(dCacheLogMessages, float64(lc.Messages), LogSourceOCILogging, lc.Level.String(), lc.Hash, lc.Sample)
 	}
 }
 

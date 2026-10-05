@@ -17,7 +17,7 @@ require (
 	github.com/aws/smithy-go v1.27.4
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/coroot/logger v1.0.0
-	github.com/coroot/logparser v1.4.1
+	github.com/coroot/logparser v1.4.2
 	github.com/dustin/go-humanize v1.0.1
 	github.com/go-kit/log v0.2.1
 	github.com/go-sql-driver/mysql v1.8.1
