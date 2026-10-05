@@ -8,6 +8,9 @@ import (
 )
 
 func (k8s *K8S) GetSecret(namespace, name string, keys ...string) (map[string]string, error) {
+	if k8s == nil {
+		return nil, ErrNotFound
+	}
 	secret, err := k8s.client.CoreV1().Secrets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsForbidden(err) {

@@ -46,6 +46,10 @@ type K8S struct {
 }
 
 func NewK8S() (*K8S, error) {
+	if *flags.DisableKubernetes {
+		klog.Infoln("kubernetes is disabled")
+		return nil, nil
+	}
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		if errors.Is(err, rest.ErrNotInCluster) {
