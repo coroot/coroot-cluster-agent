@@ -485,7 +485,7 @@ func (ms *Metrics) resolveDatabases(databases []config.Database) []*Target {
 	return res
 }
 
-func (ms *Metrics) ociLogCounters(name string) []logparser.LogCounter {
+func (ms *Metrics) ociLogCounters(name string) map[string][]logparser.LogCounter {
 	ms.targetsLock.Lock()
 	defer ms.targetsLock.Unlock()
 	for _, t := range ms.targets {
@@ -493,7 +493,7 @@ func (ms *Metrics) ociLogCounters(name string) []logparser.LogCounter {
 			continue
 		}
 		if c, ok := t.collector().(*mysql.Collector); ok {
-			return c.ErrorLogCounters()
+			return c.LogCounters()
 		}
 	}
 	return nil

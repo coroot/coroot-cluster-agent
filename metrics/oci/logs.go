@@ -13,7 +13,10 @@ import (
 	"k8s.io/klog"
 )
 
-const logsRefreshInterval = 30 * time.Second
+const (
+	LogSourceOCILogging = "oci_logging"
+	logsRefreshInterval = 30 * time.Second
+)
 
 type LogReader struct {
 	discoverer *Discoverer
@@ -39,7 +42,7 @@ func NewLogReader(discoverer *Discoverer, resource, subject, serviceName, hostNa
 	}
 	var onMsg logparser.OnMsgCallbackF
 	if forward {
-		emitter, err := common.NewLogEmitter(serviceName, hostName)
+		emitter, err := common.NewLogEmitter(serviceName, hostName, LogSourceOCILogging)
 		if err != nil {
 			klog.Errorln("failed to create the log emitter, logs won't be forwarded:", err)
 		} else {
