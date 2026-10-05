@@ -139,6 +139,10 @@ func (ms *Metrics) runScraper() error {
 }
 
 func k8sDiscovery() *config.ScrapeConfig {
+	if *flags.DisableKubernetes {
+		klog.Infoln("kubernetes is disabled, disabling k8s service discovery")
+		return nil
+	}
 	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 	if len(host) == 0 || len(port) == 0 {
 		klog.Infoln("not in k8s cluster, disabling k8s service discovery")
