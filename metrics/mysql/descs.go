@@ -9,6 +9,7 @@ var (
 	dUp          = common.Desc("mysql_up", "")
 	dScrapeError = common.Desc("mysql_scrape_error", "", "error", "warning")
 	dInfo        = common.Desc("mysql_info", "", "server_version", "server_id", "server_uuid")
+	dPerfSchema  = common.Desc("mysql_performance_schema_enabled", "Whether performance_schema is enabled (1 = ON). Per-query statistics, table I/O waits and lock waits are collected from it")
 
 	dQueryCalls        = common.Desc("mysql_top_query_calls_per_second", "", "schema", "query")
 	dQueryTotalTime    = common.Desc("mysql_top_query_time_per_second", "", "schema", "query")
