@@ -154,6 +154,13 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 	ch <- common.Gauge(dUp, 1)
+	if v, ok := c.globalVariables["performance_schema"]; ok {
+		enabled := 0.0
+		if strings.EqualFold(v, "ON") || v == "1" {
+			enabled = 1
+		}
+		ch <- common.Gauge(dPerfSchema, enabled)
+	}
 	if version := c.globalVariables["version"]; version != "" {
 		ch <- common.Gauge(dInfo, 1, version, c.globalVariables["server_id"], c.globalVariables["server_uuid"])
 	}
