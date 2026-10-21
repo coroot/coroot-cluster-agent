@@ -65,6 +65,8 @@ func NewKSM(listenAddr string, minAge time.Duration) (*KSM, error) {
 				"coroot.com/slo-availability-objective",
 				"coroot.com/slo-latency-objective",
 				"coroot.com/slo-latency-threshold",
+				"coroot.com/slo-llm-latency-objective",
+				"coroot.com/slo-llm-latency-threshold",
 			},
 		},
 		CustomResourceConfig: customResourceConfig(),
