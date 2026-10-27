@@ -46,9 +46,12 @@ func (c *Collector) getCheckpointStats(ctx context.Context, version semver.Versi
 		return err
 	}
 	if err := c.db.QueryRowContext(ctx,
-		`SELECT pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() ELSE pg_current_wal_lsn() END, redo_lsn) FROM pg_control_checkpoint()`,
-	).Scan(&c.cpWalBytes); err != nil {
+		`SELECT pg_wal_lsn_diff(lsn, redo_lsn), pg_wal_lsn_diff(lsn, checkpoint_lsn)
+		 FROM pg_control_checkpoint(),
+		 (SELECT CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() ELSE pg_current_wal_lsn() END AS lsn) wal`,
+	).Scan(&c.cpWalBytes, &c.cpWalAfterRecord); err != nil {
 		c.cpWalBytes = sql.Null[float64]{}
+		c.cpWalAfterRecord = sql.Null[float64]{}
 		c.logger.Warning(err)
 	}
 	if c.cpPrev != nil {
