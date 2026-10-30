@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/coroot-cluster-agent/flags"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,12 +41,13 @@ type PodEvent struct {
 
 type K8S struct {
 	client *kubernetes.Clientset
+	logs   *common.LogsPipeline
 	stopCh chan struct{}
 
 	subscribers []chan<- PodEvent
 }
 
-func NewK8S() (*K8S, error) {
+func NewK8S(logs *common.LogsPipeline) (*K8S, error) {
 	if *flags.DisableKubernetes {
 		klog.Infoln("kubernetes is disabled")
 		return nil, nil
@@ -66,6 +68,7 @@ func NewK8S() (*K8S, error) {
 
 	k8s := &K8S{
 		client: client,
+		logs:   logs,
 		stopCh: make(chan struct{}),
 	}
 
@@ -94,7 +97,7 @@ func (k8s *K8S) start() {
 
 	if !*flags.CollectKubernetesEvents {
 		klog.Infoln("events collector disabled")
-	} else if eventsLogger, err := NewEventsLogger(); err != nil {
+	} else if eventsLogger, err := NewEventsLogger(k8s.logs); err != nil {
 		klog.Errorln("failed to create events logger, events collection disabled:", err)
 	} else {
 		events := factory.Core().V1().Events().Informer()

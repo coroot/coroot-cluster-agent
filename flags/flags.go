@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/kingpin/v2"
+	"github.com/coroot/coroot-cluster-agent/common"
 	"k8s.io/klog"
 )
 
@@ -41,7 +42,7 @@ var (
 	TrackDatabaseBloat   = kingpin.Flag("track-database-bloat", "Estimate per-database, per-table and per-index bloat (Postgres only)").Envar("TRACK_DATABASE_BLOAT").Default("true").Bool()
 	MaxTablesPerDatabase = kingpin.Flag("max-tables-per-database", "Skip databases with more tables than this limit").Envar("MAX_TABLES_PER_DATABASE").Default("1000").Int()
 	ConfigFile           = kingpin.Flag("config-file", "Path to a YAML file with static configuration (AWS, GCP and OCI integration settings and databases to monitor), merged with the configuration received from Coroot").Envar("CONFIG_FILE").String()
-	ExcludeDatabases     = kingpin.Flag("exclude-databases", "Databases to exclude from monitoring: no schema, size, connection or query statistics are collected for them").Envar("EXCLUDE_DATABASES").Default("rdsadmin", "cloudsqladmin", "mysql", "information_schema", "performance_schema", "sys", "mysql_innodb_cluster_metadata", "mysql_innodb_cluster_metadata_previous").Strings()
+	ExcludeDatabases     = kingpin.Flag("exclude-databases", "Databases to exclude from monitoring: no schema, size, connection or query statistics are collected for them").Envar("EXCLUDE_DATABASES").Default(common.DefaultExcludeDatabases...).Strings()
 )
 
 func init() {

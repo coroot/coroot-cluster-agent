@@ -56,6 +56,7 @@ type Discoverer struct {
 	region  string // the configured region, the cluster's one by default, or "" for all regions
 	ctx     context.Context
 	reg     prometheus.Registerer
+	logs    *common.LogsPipeline
 	stop    chan struct{}
 
 	sqlClient        *sqladmin.Service
@@ -98,13 +99,14 @@ func (d *Discoverer) MemorystoreEndpoints(name string) []common.Endpoint {
 	return d.memorystoreEndpoints[name]
 }
 
-func NewDiscoverer(cfg *config.GCPConfig, k8s *k8s.K8S, reg prometheus.Registerer) (*Discoverer, error) {
+func NewDiscoverer(cfg *config.GCPConfig, k8s *k8s.K8S, reg prometheus.Registerer, logs *common.LogsPipeline) (*Discoverer, error) {
 	ctx := context.Background()
 	d := &Discoverer{
 		cfg:    cfg,
 		k8s:    k8s,
 		ctx:    ctx,
 		reg:    reg,
+		logs:   logs,
 		stop:   make(chan struct{}),
 		errors: map[string]bool{},
 

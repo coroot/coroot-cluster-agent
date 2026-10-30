@@ -13,8 +13,8 @@ type EventsLogger struct {
 	logger log.Logger
 }
 
-func NewEventsLogger() (*EventsLogger, error) {
-	provider, err := common.NewLoggerProvider("KubernetesEvents")
+func NewEventsLogger(logs *common.LogsPipeline) (*EventsLogger, error) {
+	provider, err := logs.NewLoggerProvider("KubernetesEvents")
 	if err != nil {
 		return nil, err
 	}

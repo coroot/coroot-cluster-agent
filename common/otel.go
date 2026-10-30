@@ -2,9 +2,10 @@ package common
 
 import (
 	"context"
-	"sync"
+	"crypto/tls"
+	"fmt"
+	"net/url"
 
-	"github.com/coroot/coroot-cluster-agent/flags"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	sdk "go.opentelemetry.io/otel/sdk/log"
@@ -12,46 +13,42 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.32.0"
 )
 
-var (
-	logsOnce      sync.Once
-	logsProcessor *sdk.BatchProcessor
-	logsErr       error
-)
-
-func logsPipeline() (*sdk.BatchProcessor, error) {
-	logsOnce.Do(func() {
-		opts := []otlploghttp.Option{
-			otlploghttp.WithEndpointURL((*flags.CorootURL).JoinPath("/v1/logs").String()),
-			otlploghttp.WithHeaders(AuthHeaders(*flags.APIKey)),
-		}
-		if (*flags.CorootURL).Scheme == "https" {
-			opts = append(opts, otlploghttp.WithTLSClientConfig(TlsConfig()))
-		}
-		exporter, err := otlploghttp.New(context.Background(), opts...)
-		if err != nil {
-			logsErr = err
-			return
-		}
-		logsProcessor = sdk.NewBatchProcessor(exporter)
-	})
-	return logsProcessor, logsErr
+type LogsPipeline struct {
+	processor *sdk.BatchProcessor
 }
 
-func NewLoggerProvider(serviceName string, resourceAttrs ...attribute.KeyValue) (*sdk.LoggerProvider, error) {
-	processor, err := logsPipeline()
+func NewLogsPipeline(endpoint *url.URL, headers map[string]string, tlsConfig *tls.Config) (*LogsPipeline, error) {
+	if endpoint == nil {
+		return nil, fmt.Errorf("logs endpoint is not configured")
+	}
+	opts := []otlploghttp.Option{
+		otlploghttp.WithEndpointURL(endpoint.String()),
+		otlploghttp.WithHeaders(headers),
+	}
+	if endpoint.Scheme == "https" {
+		opts = append(opts, otlploghttp.WithTLSClientConfig(tlsConfig))
+	}
+	exporter, err := otlploghttp.New(context.Background(), opts...)
 	if err != nil {
 		return nil, err
 	}
+	return &LogsPipeline{processor: sdk.NewBatchProcessor(exporter)}, nil
+}
+
+func (p *LogsPipeline) NewLoggerProvider(serviceName string, resourceAttrs ...attribute.KeyValue) (*sdk.LoggerProvider, error) {
+	if p == nil {
+		return nil, fmt.Errorf("logs forwarding is not configured")
+	}
 	attrs := append([]attribute.KeyValue{semconv.ServiceName(serviceName)}, resourceAttrs...)
 	return sdk.NewLoggerProvider(
-		sdk.WithProcessor(processor),
+		sdk.WithProcessor(p.processor),
 		sdk.WithResource(resource.NewWithAttributes(semconv.SchemaURL, attrs...)),
 	), nil
 }
 
-func ShutdownLogs(ctx context.Context) error {
-	if logsProcessor == nil {
+func (p *LogsPipeline) Shutdown(ctx context.Context) error {
+	if p == nil {
 		return nil
 	}
-	return logsProcessor.Shutdown(ctx)
+	return p.processor.Shutdown(ctx)
 }

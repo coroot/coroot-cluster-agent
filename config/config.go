@@ -34,7 +34,7 @@ func NewUpdater() (*Updater, error) {
 		httpClient: &http.Client{
 			Timeout: *flags.ConfigUpdateTimeout,
 			Transport: &http.Transport{
-				TLSClientConfig: common.TlsConfig(),
+				TLSClientConfig: common.TlsConfig(*flags.InsecureSkipVerify, *flags.CAFile),
 			},
 		},
 	}

@@ -5,42 +5,28 @@ import (
 	"fmt"
 	"maps"
 	"net"
-	"net/url"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/coroot-cluster-agent/config"
 	"github.com/coroot/coroot-cluster-agent/k8s"
-	"github.com/coroot/coroot-cluster-agent/metrics/mongo"
-	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
-	"github.com/coroot/coroot-cluster-agent/metrics/postgres"
-	"github.com/coroot/coroot-cluster-agent/schema/emitter"
+	"github.com/coroot/coroot-cluster-agent/metrics/exporter"
 	"github.com/coroot/logger"
-	"github.com/go-kit/log/level"
-	gomysql "github.com/go-sql-driver/mysql"
-	"github.com/lib/pq"
-	redis "github.com/oliver006/redis_exporter/exporter"
 	"github.com/prometheus/client_golang/prometheus"
-	memcached "github.com/prometheus/memcached_exporter/pkg/exporter"
 )
 
-type TargetType string
+type TargetType = exporter.Type
 
 const (
-	TargetTypePostgres  TargetType = "postgres"
-	TargetTypeMysql     TargetType = "mysql"
-	TargetTypeRedis     TargetType = "redis"
-	TargetTypeMongodb   TargetType = "mongodb"
-	TargetTypeMemcached TargetType = "memcached"
+	TargetTypePostgres  = exporter.TypePostgres
+	TargetTypeMysql     = exporter.TypeMysql
+	TargetTypeRedis     = exporter.TypeRedis
+	TargetTypeMongodb   = exporter.TypeMongodb
+	TargetTypeMemcached = exporter.TypeMemcached
 )
 
-type Credentials struct {
-	Username string
-	Password string
-}
+type Credentials = exporter.Credentials
 
 type CredentialsSecret struct {
 	Namespace   string
@@ -121,154 +107,21 @@ func (t *Target) IsExporterStarted() bool {
 	return t.collector() != nil
 }
 
-func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, tlsCreds common.TLSCredentials, scrapeInterval, scrapeTimeout time.Duration, changeEmitter *emitter.ChangeEmitter, maxTablesPerDB int, trackSizes, trackBloat bool, excludeDatabases []string) error {
-	collectTimeout := scrapeTimeout - time.Second
-	if collectTimeout <= 0 {
-		collectTimeout = time.Second
+func (t *Target) StartExporter(reg *prometheus.Registry, credentials Credentials, tlsCreds common.TLSCredentials, opts exporter.Options) error {
+	e, err := exporter.New(exporter.Config{
+		Type:        t.Type,
+		Addr:        t.Addr,
+		Credentials: credentials,
+		TLS:         tlsCreds,
+		Params:      t.Params,
+		Description: t.Description,
+		LogService:  t.LogService,
+	}, opts, t.logger)
+	if err != nil {
+		return err
 	}
-	caCert := tlsCreds.CA
-	switch t.Type {
-
-	case TargetTypePostgres:
-		userPass := url.UserPassword(credentials.Username, credentials.Password)
-		query := url.Values{}
-		query.Set("connect_timeout", "1")
-		query.Set("statement_timeout", strconv.Itoa(int(collectTimeout.Milliseconds())))
-		sslmode := t.Params["sslmode"]
-		pqTLSName := ""
-		if tlsCreds.CA != "" || (tlsCreds.Cert != "" && tlsCreds.Key != "") {
-			cfg, err := common.DatabaseTLSConfig(tlsCreds, false)
-			if err != nil {
-				return err
-			}
-			pqTLSName = "coroot-" + t.Addr
-			if err = pq.RegisterTLSConfig(pqTLSName, cfg); err != nil {
-				return err
-			}
-			sslmode = "pqgo-" + pqTLSName
-		}
-		if sslmode == "" {
-			sslmode = "disable"
-		}
-		query.Set("sslmode", sslmode)
-		dsn := fmt.Sprintf("postgresql://%s@%s/postgres?%s", userPass, t.Addr, query.Encode())
-		collector, err := postgres.New(dsn, scrapeInterval, collectTimeout, t.logger, changeEmitter, t.Addr, maxTablesPerDB, trackSizes, trackBloat, excludeDatabases)
-		if err != nil {
-			if pqTLSName != "" {
-				_ = pq.RegisterTLSConfig(pqTLSName, nil)
-			}
-			return err
-		}
-		t.setCollector(collector)
-		t.stop = func() {
-			_ = collector.Close()
-			if pqTLSName != "" {
-				_ = pq.RegisterTLSConfig(pqTLSName, nil)
-			}
-		}
-
-	case TargetTypeMysql:
-		userPass := fmt.Sprintf("%s:%s", credentials.Username, credentials.Password)
-		query := url.Values{}
-		query.Set("timeout", fmt.Sprintf("%dms", collectTimeout.Milliseconds()))
-		tlsParam := t.Params["tls"]
-		tlsConfigName := ""
-		if (caCert != "" || (tlsCreds.Cert != "" && tlsCreds.Key != "")) && tlsParam != "false" {
-			cfg, err := common.DatabaseTLSConfig(tlsCreds, tlsParam == "skip-verify")
-			if err != nil {
-				return err
-			}
-			tlsConfigName = "coroot-" + t.Addr
-			if err = gomysql.RegisterTLSConfig(tlsConfigName, cfg); err != nil {
-				return err
-			}
-			tlsParam = tlsConfigName
-		}
-		if tlsParam == "" {
-			tlsParam = "false"
-		}
-		query.Set("tls", tlsParam)
-		dsn := fmt.Sprintf("%s@tcp(%s)/?%s", userPass, t.Addr, query.Encode())
-		collector, err := mysql.New(dsn, t.logger, scrapeInterval, collectTimeout,
-			changeEmitter, t.Addr, maxTablesPerDB, trackSizes, excludeDatabases)
-		if err != nil {
-			if tlsConfigName != "" {
-				gomysql.DeregisterTLSConfig(tlsConfigName)
-			}
-			return err
-		}
-		if t.LogService != "" {
-			collector.StartErrorLog(t.LogService, t.Description)
-		}
-		t.setCollector(collector)
-		t.stop = func() {
-			_ = collector.Close()
-			if tlsConfigName != "" {
-				gomysql.DeregisterTLSConfig(tlsConfigName)
-			}
-		}
-
-	case TargetTypeRedis:
-		opts := redis.Options{
-			User:                           credentials.Username,
-			Password:                       credentials.Password,
-			Namespace:                      "redis",
-			ConnectionTimeouts:             collectTimeout,
-			RedisMetricsOnly:               true,
-			ExcludeLatencyHistogramMetrics: true,
-		}
-		if strings.Contains(t.Description, "elasticache:") || strings.Contains(t.Description, "memorystore:") || strings.Contains(t.Description, "ocicache:") { // managed services don't allow the CONFIG command
-			opts.ConfigCommandName = "-"
-		}
-		tls := t.Params["tls"]
-		if tls == "" && strings.Contains(t.Description, "ocicache:") {
-			tls = "skip-verify"
-		}
-		scheme := "redis"
-		if tls != "" {
-			scheme = "rediss"
-			opts.SkipTLSVerification = tls == "skip-verify"
-		}
-		dsn := fmt.Sprintf("%s://%s", scheme, t.Addr)
-		collector, err := redis.NewRedisExporter(dsn, opts)
-		if err != nil {
-			return err
-		}
-		t.setCollector(collector)
-		t.stop = func() {}
-
-	case TargetTypeMongodb:
-		collector := mongo.New(
-			t.Addr,
-			credentials.Username,
-			credentials.Password,
-			tlsCreds,
-			t.Params,
-			scrapeInterval,
-			collectTimeout,
-			t.logger,
-			changeEmitter,
-			t.Addr,
-			maxTablesPerDB,
-			trackSizes,
-		)
-		t.setCollector(collector)
-		t.stop = func() { _ = collector.Close() }
-
-	case TargetTypeMemcached:
-		collector := memcached.New(
-			t.Addr,
-			collectTimeout,
-			level.NewFilter(&promLogger{l: t.logger}, level.AllowInfo()),
-			nil,
-		)
-		t.setCollector(collector)
-		t.stop = func() {}
-
-	default:
-		return fmt.Errorf("unsupported target type: %s", t.Type)
-	}
-
+	t.setCollector(e)
+	t.stop = e.Close
 	return prometheus.WrapRegistererWith(t.Labels(), reg).Register(t)
 }
 
