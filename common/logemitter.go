@@ -23,8 +23,8 @@ type LogEmitter struct {
 	source   string
 }
 
-func NewLogEmitter(serviceName, hostName, source string) (*LogEmitter, error) {
-	provider, err := NewLoggerProvider(serviceName, semconv.HostName(hostName))
+func (p *LogsPipeline) NewLogEmitter(serviceName, hostName, source string) (*LogEmitter, error) {
+	provider, err := p.NewLoggerProvider(serviceName, semconv.HostName(hostName))
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func (e *LogEmitter) Callback() logparser.OnMsgCallbackF {
 		record := log.Record{}
 		record.SetTimestamp(ts)
 		record.SetSeverityText(level.String())
-		record.SetSeverity(severity(level))
+		record.SetSeverity(LogSeverity(level))
 		record.SetBody(log.StringValue(msg))
 		if patternHash != "" {
 			record.AddAttributes(log.String("pattern.hash", patternHash))
@@ -62,7 +62,8 @@ func (e *LogEmitter) Stop() {
 	}
 }
 
-func severity(level logparser.Level) log.Severity {
+// LogSeverity maps a logparser level to the OpenTelemetry log severity.
+func LogSeverity(level logparser.Level) log.Severity {
 	switch level {
 	case logparser.LevelCritical:
 		return log.SeverityFatal

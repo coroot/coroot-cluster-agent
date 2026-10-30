@@ -16,12 +16,12 @@ import (
 	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/coroot/coroot-cluster-agent/k8s"
 	"github.com/coroot/coroot-cluster-agent/metrics/aws"
+	"github.com/coroot/coroot-cluster-agent/metrics/exporter"
 	"github.com/coroot/coroot-cluster-agent/metrics/gcp"
 	"github.com/coroot/coroot-cluster-agent/metrics/ksm"
 	"github.com/coroot/coroot-cluster-agent/metrics/mysql"
 	"github.com/coroot/coroot-cluster-agent/metrics/oci"
 	"github.com/coroot/coroot-cluster-agent/schema/emitter"
-	"github.com/coroot/logger"
 	"github.com/coroot/logparser"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -57,9 +57,10 @@ type Metrics struct {
 	ksm          *ksm.KSM
 
 	changeEmitter *emitter.ChangeEmitter
+	logs          *common.LogsPipeline
 }
 
-func NewMetrics(k8s *k8s.K8S, static *config.Static) (*Metrics, error) {
+func NewMetrics(k8s *k8s.K8S, static *config.Static, logs *common.LogsPipeline) (*Metrics, error) {
 	if *flags.MetricsScrapeInterval == 0 {
 		klog.Infoln("scrape interval is not set, disabling the scraper")
 		return nil, nil
@@ -76,6 +77,7 @@ func NewMetrics(k8s *k8s.K8S, static *config.Static) (*Metrics, error) {
 		targets:        map[string]*Target{},
 		k8s:            k8s,
 		static:         static,
+		logs:           logs,
 	}
 
 	var err error
@@ -89,7 +91,7 @@ func NewMetrics(k8s *k8s.K8S, static *config.Static) (*Metrics, error) {
 	}
 
 	if *flags.TrackDatabaseChanges {
-		ms.changeEmitter, err = emitter.NewChangeEmitter()
+		ms.changeEmitter, err = emitter.NewChangeEmitter(logs)
 		if err != nil {
 			return nil, err
 		}
@@ -277,7 +279,7 @@ func (ms *Metrics) startExporters() {
 					}
 				}
 			}
-			if err := t.StartExporter(ms.reg, credentials, tlsCreds, ms.scrapeInterval, ms.scrapeTimeout, ms.changeEmitter, *flags.MaxTablesPerDatabase, *flags.TrackDatabaseSizes, *flags.TrackDatabaseBloat, *flags.ExcludeDatabases); err != nil {
+			if err := t.StartExporter(ms.reg, credentials, tlsCreds, ms.exporterOptions()); err != nil {
 				t.logger.Errorf("failed to start exporter: %s", err)
 				continue
 			}
@@ -292,7 +294,7 @@ func (ms *Metrics) updateAWS(cfg *config.AWSConfig) {
 		ms.aws.Stop()
 		ms.aws = nil
 	case cfg != nil && ms.aws == nil:
-		d, err := aws.NewDiscoverer(cfg, ms.k8s, ms.reg)
+		d, err := aws.NewDiscoverer(cfg, ms.k8s, ms.reg, ms.logs)
 		if ms.logCloudError("aws", err) {
 			ms.aws = d
 		}
@@ -312,7 +314,7 @@ func (ms *Metrics) updateGCP(cfg *config.GCPConfig) {
 		ms.gcp = nil
 	}
 	if cfg != nil && ms.gcp == nil {
-		if d, err := gcp.NewDiscoverer(cfg, ms.k8s, ms.reg); ms.logCloudError("gcp", err) {
+		if d, err := gcp.NewDiscoverer(cfg, ms.k8s, ms.reg, ms.logs); ms.logCloudError("gcp", err) {
 			ms.gcp = d
 		}
 	}
@@ -324,7 +326,7 @@ func (ms *Metrics) updateOCI(cfg *config.OCIConfig) {
 		ms.oci = nil
 	}
 	if cfg != nil && ms.oci == nil {
-		if d, err := oci.NewDiscoverer(cfg, ms.k8s, ms.reg, ms.ociLogCounters); ms.logCloudError("oci", err) {
+		if d, err := oci.NewDiscoverer(cfg, ms.k8s, ms.reg, ms.logs, ms.ociLogCounters); ms.logCloudError("oci", err) {
 			ms.oci = d
 		}
 	}
@@ -568,11 +570,22 @@ func (ms *Metrics) discoverFromConfig(targets []*Target) {
 	}
 }
 
-type promLogger struct {
-	l logger.Logger
-}
-
-func (l *promLogger) Log(keyvals ...interface{}) error {
-	l.l.Info(keyvals...)
-	return nil
+func (ms *Metrics) exporterOptions() exporter.Options {
+	collectTimeout := ms.scrapeTimeout - time.Second
+	if collectTimeout <= 0 {
+		collectTimeout = time.Second
+	}
+	opts := exporter.Options{
+		ScrapeInterval:   ms.scrapeInterval,
+		CollectTimeout:   collectTimeout,
+		Logs:             ms.logs,
+		MaxTablesPerDB:   *flags.MaxTablesPerDatabase,
+		TrackSizes:       *flags.TrackDatabaseSizes,
+		TrackBloat:       *flags.TrackDatabaseBloat,
+		ExcludeDatabases: *flags.ExcludeDatabases,
+	}
+	if ms.changeEmitter != nil {
+		opts.ChangeEmitter = ms.changeEmitter
+	}
+	return opts
 }

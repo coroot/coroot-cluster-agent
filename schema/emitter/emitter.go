@@ -13,8 +13,8 @@ type ChangeEmitter struct {
 	logger log.Logger
 }
 
-func NewChangeEmitter() (*ChangeEmitter, error) {
-	provider, err := common.NewLoggerProvider("DatabaseChanges")
+func NewChangeEmitter(logs *common.LogsPipeline) (*ChangeEmitter, error) {
+	provider, err := logs.NewLoggerProvider("DatabaseChanges")
 	if err != nil {
 		return nil, err
 	}

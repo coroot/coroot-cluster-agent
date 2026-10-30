@@ -42,7 +42,7 @@ func NewLogReader(discoverer *Discoverer, resource, subject, serviceName, hostNa
 	}
 	var onMsg logparser.OnMsgCallbackF
 	if forward {
-		emitter, err := common.NewLogEmitter(serviceName, hostName, LogSourceOCILogging)
+		emitter, err := discoverer.logs.NewLogEmitter(serviceName, hostName, LogSourceOCILogging)
 		if err != nil {
 			klog.Errorln("failed to create the log emitter, logs won't be forwarded:", err)
 		} else {

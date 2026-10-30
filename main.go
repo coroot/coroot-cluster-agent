@@ -23,6 +23,11 @@ var (
 func main() {
 	klog.Infoln("version:", version)
 
+	logs, err := common.NewLogsPipeline((*flags.CorootURL).JoinPath("/v1/logs"), common.AuthHeaders(*flags.APIKey), common.TlsConfig(*flags.InsecureSkipVerify, *flags.CAFile))
+	if err != nil {
+		klog.Exitln(err)
+	}
+
 	router := mux.NewRouter()
 	router.Use(func(handler http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,12 +48,12 @@ func main() {
 		klog.Exitln(err)
 	}
 
-	k8s, err := k8s.NewK8S()
+	k8s, err := k8s.NewK8S(logs)
 	if err != nil {
 		klog.Exitln(err)
 	}
 
-	ms, err := metrics.NewMetrics(k8s, static)
+	ms, err := metrics.NewMetrics(k8s, static, logs)
 	if err != nil {
 		klog.Exitln(err)
 	}
@@ -73,7 +78,7 @@ func main() {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = common.ShutdownLogs(ctx)
+		_ = logs.Shutdown(ctx)
 	}()
 
 	k8s.Start()

@@ -44,6 +44,7 @@ type Discoverer struct {
 	awsCfg aws.Config
 	ctx    context.Context
 	reg    prometheus.Registerer
+	logs   *common.LogsPipeline
 	stop   chan struct{}
 
 	rdsClient            *rds.Client
@@ -117,7 +118,7 @@ func (d *Discoverer) publishEndpoints() {
 	d.endpointsLock.Unlock()
 }
 
-func NewDiscoverer(cfg *config.AWSConfig, k8s *k8s.K8S, reg prometheus.Registerer) (*Discoverer, error) {
+func NewDiscoverer(cfg *config.AWSConfig, k8s *k8s.K8S, reg prometheus.Registerer, logs *common.LogsPipeline) (*Discoverer, error) {
 	ctx := context.Background()
 	awsCfg, err := newAWSConfig(ctx, cfg, k8s)
 	if err != nil {
@@ -130,6 +131,7 @@ func NewDiscoverer(cfg *config.AWSConfig, k8s *k8s.K8S, reg prometheus.Registere
 		awsCfg: awsCfg,
 		ctx:    ctx,
 		reg:    reg,
+		logs:   logs,
 		stop:   make(chan struct{}),
 
 		errors: map[string]bool{},

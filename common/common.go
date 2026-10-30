@@ -10,15 +10,14 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/coroot/coroot-cluster-agent/flags"
 	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/klog"
 )
 
-func TlsConfig() *tls.Config {
-	cfg := &tls.Config{InsecureSkipVerify: *flags.InsecureSkipVerify}
-	if *flags.CAFile != "" {
-		ca, err := os.ReadFile(*flags.CAFile)
+func TlsConfig(insecureSkipVerify bool, caFile string) *tls.Config {
+	cfg := &tls.Config{InsecureSkipVerify: insecureSkipVerify}
+	if caFile != "" {
+		ca, err := os.ReadFile(caFile)
 		if err != nil {
 			klog.Fatalln(err)
 			return cfg
@@ -29,7 +28,7 @@ func TlsConfig() *tls.Config {
 			pool = x509.NewCertPool()
 		}
 		if !pool.AppendCertsFromPEM(ca) {
-			klog.Fatalf("failed to parse CA from %s", *flags.CAFile)
+			klog.Fatalf("failed to parse CA from %s", caFile)
 		}
 		cfg.RootCAs = pool
 	}
@@ -120,6 +119,8 @@ func LabelsMatched(filters, labels map[string]string) bool {
 	}
 	return true
 }
+
+var DefaultExcludeDatabases = []string{"rdsadmin", "cloudsqladmin", "mysql", "information_schema", "performance_schema", "sys", "mysql_innodb_cluster_metadata", "mysql_innodb_cluster_metadata_previous"}
 
 type Endpoint struct {
 	Host string

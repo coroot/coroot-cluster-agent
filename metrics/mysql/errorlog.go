@@ -28,11 +28,11 @@ type ErrorLogReader struct {
 	logger  logger.Logger
 }
 
-func (c *Collector) StartErrorLog(serviceName, hostName string) {
+func (c *Collector) StartErrorLog(logs *common.LogsPipeline, serviceName, hostName string) {
 	if c.errorLog != nil { // already started
 		return
 	}
-	emitter, err := common.NewLogEmitter(serviceName, hostName, ErrorLogSource)
+	emitter, err := logs.NewLogEmitter(serviceName, hostName, ErrorLogSource)
 	if err != nil {
 		c.logger.Warning("failed to create the log emitter, the error log won't be forwarded:", err)
 		return

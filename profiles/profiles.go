@@ -54,7 +54,7 @@ func NewProfiles() *Profiles {
 		scrapeTimeout:  *flags.ProfilesScrapeTimeout,
 		httpClient: &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: common.TlsConfig(),
+				TLSClientConfig: common.TlsConfig(*flags.InsecureSkipVerify, *flags.CAFile),
 			},
 		},
 		prevCache: map[ProfileKey]map[uint64]int64{},

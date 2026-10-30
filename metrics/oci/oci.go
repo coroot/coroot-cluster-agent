@@ -58,6 +58,7 @@ type Discoverer struct {
 	region       string
 	ctx          context.Context
 	reg          prometheus.Registerer
+	logs         *common.LogsPipeline
 	stop         chan struct{}
 
 	mysqlClient         mysql.DbSystemClient
@@ -114,12 +115,13 @@ func (d *Discoverer) CacheEndpoint(name string) (common.Endpoint, bool) {
 	return e, ok
 }
 
-func NewDiscoverer(cfg *config.OCIConfig, k8s *k8s.K8S, reg prometheus.Registerer, logCounters func(name string) map[string][]logparser.LogCounter) (*Discoverer, error) {
+func NewDiscoverer(cfg *config.OCIConfig, k8s *k8s.K8S, reg prometheus.Registerer, logs *common.LogsPipeline, logCounters func(name string) map[string][]logparser.LogCounter) (*Discoverer, error) {
 	d := &Discoverer{
 		cfg:             cfg,
 		k8s:             k8s,
 		ctx:             context.Background(),
 		reg:             reg,
+		logs:            logs,
 		stop:            make(chan struct{}),
 		errors:          map[string]bool{},
 		dbCollectors:    map[string]*DBCollector{},
