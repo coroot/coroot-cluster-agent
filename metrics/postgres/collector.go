@@ -52,21 +52,22 @@ var (
 	dWalReceiveLsn     = desc("pg_wal_receive_lsn", "WAL sequence number that has been received and synced to disk by streaming replication")
 	dWalReplyLsn       = desc("pg_wal_reply_lsn", "WAL sequence number that has been replayed during recovery")
 
-	dCheckpointsScheduled    = desc("pg_checkpoints_scheduled_total", "Number of scheduled checkpoints, including skipped ones", "type")
-	dCheckpoints             = desc("pg_checkpoints_total", "Number of checkpoints that have been completed")
-	dRestartpoints           = desc("pg_restartpoints_total", "Number of restartpoints that have been completed on a standby")
-	dBuffersWritten          = desc("pg_buffers_written_total", "Total number of dirty buffers flushed to disk", "source")
-	dTimeSinceLastCheckpoint = desc("pg_time_since_last_checkpoint_seconds", "Seconds since the last checkpoint observed by the agent")
-	dWalSinceLastCheckpoint  = desc("pg_wal_since_last_checkpoint_bytes", "Amount of WAL written since the last completed checkpoint (to be replayed in the case of a crash)")
-	dWalSize                 = desc("pg_wal_size_bytes", "Size of the WAL directory")
-	dReplicationSlotRetained = desc("pg_replication_slot_retained_wal_bytes", "Amount of WAL retained for the replication slot", "slot", "active", "wal_status")
-	dXidAge                  = desc("pg_xid_age", "Transactions since the oldest unfrozen transaction ID (age of datfrozenxid)", "db")
-	dMultixactAge            = desc("pg_multixact_age", "Multixacts since the oldest unfrozen multixact ID (age of datminmxid)", "db")
-	dOldestXminAge           = desc("pg_oldest_xmin_age", "Age, in transactions, of the oldest transaction ID held back from freezing, by holder", "holder")
-	dTransactionSeconds      = desc("pg_transaction_seconds", "Age of the longest-running transaction, by query", "db", "user", "query")
-	dWalArchivedSegments     = desc("pg_wal_archived_segments_total", "Number of WAL files successfully archived")
-	dWalArchiveFailures      = desc("pg_wal_archive_failures_total", "Number of failed attempts to archive WAL files")
-	dWalArchivingStatus      = desc("pg_wal_archiving_status", "1 if the last WAL archive attempt succeeded, 0 if it failed")
+	dCheckpointsScheduled         = desc("pg_checkpoints_scheduled_total", "Number of scheduled checkpoints, including skipped ones", "type")
+	dCheckpoints                  = desc("pg_checkpoints_total", "Number of checkpoints that have been completed")
+	dRestartpoints                = desc("pg_restartpoints_total", "Number of restartpoints that have been completed on a standby")
+	dBuffersWritten               = desc("pg_buffers_written_total", "Total number of dirty buffers flushed to disk", "source")
+	dTimeSinceLastCheckpoint      = desc("pg_time_since_last_checkpoint_seconds", "Seconds since the last checkpoint observed by the agent")
+	dWalSinceLastCheckpoint       = desc("pg_wal_since_last_checkpoint_bytes", "Amount of WAL written since the last completed checkpoint (to be replayed in the case of a crash)")
+	dWalSinceLastCheckpointRecord = desc("pg_wal_since_last_checkpoint_record_bytes", "Amount of WAL inserted or replayed after the last completed checkpoint or restartpoint record")
+	dWalSize                      = desc("pg_wal_size_bytes", "Size of the WAL directory")
+	dReplicationSlotRetained      = desc("pg_replication_slot_retained_wal_bytes", "Amount of WAL retained for the replication slot", "slot", "active", "wal_status")
+	dXidAge                       = desc("pg_xid_age", "Transactions since the oldest unfrozen transaction ID (age of datfrozenxid)", "db")
+	dMultixactAge                 = desc("pg_multixact_age", "Multixacts since the oldest unfrozen multixact ID (age of datminmxid)", "db")
+	dOldestXminAge                = desc("pg_oldest_xmin_age", "Age, in transactions, of the oldest transaction ID held back from freezing, by holder", "holder")
+	dTransactionSeconds           = desc("pg_transaction_seconds", "Age of the longest-running transaction, by query", "db", "user", "query")
+	dWalArchivedSegments          = desc("pg_wal_archived_segments_total", "Number of WAL files successfully archived")
+	dWalArchiveFailures           = desc("pg_wal_archive_failures_total", "Number of failed attempts to archive WAL files")
+	dWalArchivingStatus           = desc("pg_wal_archiving_status", "1 if the last WAL archive attempt succeeded, 0 if it failed")
 
 	dDbSize          = desc("pg_database_size_bytes", "Total size of the database in bytes", "db")
 	dTableSize       = desc("pg_table_size_bytes", "Total size of the table in bytes including indexes and TOAST", "db", "schema", "table")
@@ -139,6 +140,7 @@ type Collector struct {
 	cpRestartsDone   float64
 	cpBuffers        float64
 	cpWalBytes       sql.Null[float64]
+	cpWalAfterRecord sql.Null[float64]
 	lastCheckpointAt time.Time
 
 	walSize          sql.Null[float64]
@@ -582,6 +584,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	if c.cpWalBytes.Valid {
 		ch <- gauge(dWalSinceLastCheckpoint, c.cpWalBytes.V)
 	}
+	if c.cpWalAfterRecord.Valid {
+		ch <- gauge(dWalSinceLastCheckpointRecord, c.cpWalAfterRecord.V)
+	}
 	if c.walSize.Valid {
 		ch <- gauge(dWalSize, c.walSize.V)
 	}
@@ -645,6 +650,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dBuffersWritten
 	ch <- dTimeSinceLastCheckpoint
 	ch <- dWalSinceLastCheckpoint
+	ch <- dWalSinceLastCheckpointRecord
 	ch <- dWalSize
 	ch <- dReplicationSlotRetained
 	ch <- dWalArchivedSegments
