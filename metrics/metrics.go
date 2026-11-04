@@ -143,7 +143,16 @@ func (ms *Metrics) ListenPodEvents(events <-chan k8s.PodEvent) {
 }
 
 func (ms *Metrics) HttpHandler() http.Handler {
-	return promhttp.HandlerFor(ms.reg, promhttp.HandlerOpts{})
+	return promhttp.HandlerFor(ms.reg, promhttp.HandlerOpts{
+		ErrorHandling: promhttp.ContinueOnError,
+		ErrorLog:      promErrorLogger{},
+	})
+}
+
+type promErrorLogger struct{}
+
+func (promErrorLogger) Println(v ...interface{}) {
+	klog.Errorln(v...)
 }
 
 func (ms *Metrics) addTarget(target *Target) {
