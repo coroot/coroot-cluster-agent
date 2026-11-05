@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"math"
 	"net/http"
 	_ "net/http/pprof"
+	"runtime/debug"
 	"time"
 
+	"github.com/KimMachineGun/automemlimit/memlimit"
 	"github.com/coroot/coroot-cluster-agent/common"
 	"github.com/coroot/coroot-cluster-agent/config"
 	"github.com/coroot/coroot-cluster-agent/flags"
@@ -20,8 +23,23 @@ var (
 	version = "unknown"
 )
 
+func setMemoryLimit() {
+	if _, err := memlimit.SetGoMemLimitWithOpts(); err != nil {
+		klog.Warningln("failed to set memory limit:", err)
+		return
+	}
+	limit := debug.SetMemoryLimit(-1)
+	if limit == math.MaxInt64 {
+		klog.Infoln("memory limit: not set")
+		return
+	}
+	klog.Infof("memory limit: %d MiB", limit>>20)
+}
+
 func main() {
 	klog.Infoln("version:", version)
+
+	setMemoryLimit()
 
 	logs, err := common.NewLogsPipeline((*flags.CorootURL).JoinPath("/v1/logs"), common.AuthHeaders(*flags.APIKey), common.TlsConfig(*flags.InsecureSkipVerify, *flags.CAFile))
 	if err != nil {
