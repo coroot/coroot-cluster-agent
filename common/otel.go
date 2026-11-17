@@ -17,7 +17,7 @@ type LogsPipeline struct {
 	processor *sdk.BatchProcessor
 }
 
-func NewLogsPipeline(endpoint *url.URL, headers map[string]string, tlsConfig *tls.Config) (*LogsPipeline, error) {
+func NewLogsPipeline(endpoint *url.URL, headers map[string]string, tlsConfig *tls.Config, extraOpts ...otlploghttp.Option) (*LogsPipeline, error) {
 	if endpoint == nil {
 		return nil, fmt.Errorf("logs endpoint is not configured")
 	}
@@ -28,6 +28,7 @@ func NewLogsPipeline(endpoint *url.URL, headers map[string]string, tlsConfig *tl
 	if endpoint.Scheme == "https" {
 		opts = append(opts, otlploghttp.WithTLSClientConfig(tlsConfig))
 	}
+	opts = append(opts, extraOpts...)
 	exporter, err := otlploghttp.New(context.Background(), opts...)
 	if err != nil {
 		return nil, err

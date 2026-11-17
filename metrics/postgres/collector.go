@@ -153,7 +153,7 @@ type Collector struct {
 
 	dbTracker        *databaseTracker
 	excludeDatabases map[string]bool
-	emitter          dbtracker.ChangeEmitter
+	emitter          dbtracker.Emitter
 	targetAddr       string
 	prevSettingsText string
 
@@ -161,7 +161,7 @@ type Collector struct {
 	logger logger.Logger
 }
 
-func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter dbtracker.ChangeEmitter, targetAddr string, maxTablesPerDB int, trackSizes, trackBloat bool, excludeDatabases []string) (*Collector, error) {
+func New(dsn string, scrapeInterval, collectTimeout time.Duration, logger logger.Logger, emitter dbtracker.Emitter, targetAddr string, maxTablesPerDB int, trackSizes, trackBloat bool, excludeDatabases []string) (*Collector, error) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := &Collector{
 		ctx:              ctx,

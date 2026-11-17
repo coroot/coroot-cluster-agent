@@ -2,6 +2,7 @@ package dbtracker
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/coroot/coroot-cluster-agent/common"
@@ -10,12 +11,15 @@ import (
 )
 
 const (
-	TrackMinInterval = 60 * time.Second
-	TopTablesN       = 20
+	TrackMinInterval      = 60 * time.Second
+	TopTablesN            = 20
+	SchemaRefreshInterval = time.Hour
+	SchemaEmitBudget      = 200
 )
 
-type ChangeEmitter interface {
-	Emit(change schema.Change, dbSystem, targetAddr string)
+type Emitter interface {
+	EmitChange(change schema.Change, dbSystem, targetAddr string)
+	EmitSchema(rec schema.TableRecord, dbSystem, targetAddr string)
 }
 
 type TableSizeEntry struct {
@@ -45,7 +49,10 @@ type Tracker struct {
 	logger      logger.Logger
 	collect     CollectFunc
 
+	TableStats map[schema.TableKey]schema.TableStats
+
 	prev           schema.Snapshot
+	schemaEmitted  map[schema.TableKey]time.Time
 	lastTracked    time.Time
 	DBSizes        map[string]*DBSizeSnapshot
 	prevTableSizes map[schema.TableKey]float64
@@ -62,7 +69,7 @@ func NewTracker(dbSystem string, trackSchema, trackSizes bool, collect CollectFu
 	}
 }
 
-func (t *Tracker) Track(ctx context.Context, emitter ChangeEmitter, targetAddr string) {
+func (t *Tracker) Track(ctx context.Context, emitter Emitter, targetAddr string) {
 	if time.Since(t.lastTracked) < TrackMinInterval {
 		return
 	}
@@ -83,10 +90,92 @@ func (t *Tracker) Track(ctx context.Context, emitter ChangeEmitter, targetAddr s
 
 	if t.trackSchema {
 		for _, c := range schema.Diff(t.prev, curr) {
-			emitter.Emit(c, t.dbSystem, targetAddr)
+			emitter.EmitChange(c, t.dbSystem, targetAddr)
+			delete(t.schemaEmitted, schema.TableKey{DB: c.Database, Schema: c.Schema, Table: c.Object})
 		}
 		t.prev = curr
+		t.emitSchema(emitter, targetAddr, curr, t.lastTracked)
 	}
+}
+
+func (t *Tracker) SchemaStatsNeeded(tables schema.Snapshot) bool {
+	for key, ddl := range tables {
+		if prev, ok := t.prev[key]; !ok || prev != ddl {
+			return true
+		}
+		if last, ok := t.schemaEmitted[key]; !ok || t.lastTracked.Sub(last) >= SchemaRefreshInterval {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *Tracker) emitSchema(emitter Emitter, targetAddr string, curr schema.Snapshot, now time.Time) {
+	if t.schemaEmitted == nil {
+		t.schemaEmitted = map[schema.TableKey]time.Time{}
+	}
+	budget := SchemaEmitBudget
+
+	dbs := map[string]bool{}
+	for key := range curr {
+		dbs[key.DB] = true
+	}
+	var dropped []schema.TableKey
+	for key := range t.schemaEmitted {
+		if _, ok := curr[key]; ok {
+			continue
+		}
+		if !dbs[key.DB] {
+			delete(t.schemaEmitted, key)
+			continue
+		}
+		dropped = append(dropped, key)
+	}
+	sort.Slice(dropped, func(i, j int) bool { return tableKeyLess(dropped[i], dropped[j]) })
+	for _, key := range dropped {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		emitter.EmitSchema(schema.TableRecord{Key: key, Dropped: true}, t.dbSystem, targetAddr)
+		delete(t.schemaEmitted, key)
+	}
+
+	type dueTable struct {
+		key  schema.TableKey
+		last time.Time
+	}
+	var due []dueTable
+	for key := range curr {
+		last, ok := t.schemaEmitted[key]
+		if !ok || now.Sub(last) >= SchemaRefreshInterval {
+			due = append(due, dueTable{key: key, last: last})
+		}
+	}
+	sort.Slice(due, func(i, j int) bool {
+		if !due[i].last.Equal(due[j].last) {
+			return due[i].last.Before(due[j].last)
+		}
+		return tableKeyLess(due[i].key, due[j].key)
+	})
+	for _, d := range due {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		emitter.EmitSchema(schema.TableRecord{Key: d.key, DDL: curr[d.key], Stats: t.TableStats[d.key]}, t.dbSystem, targetAddr)
+		t.schemaEmitted[d.key] = now
+	}
+}
+
+func tableKeyLess(a, b schema.TableKey) bool {
+	if a.DB != b.DB {
+		return a.DB < b.DB
+	}
+	if a.Schema != b.Schema {
+		return a.Schema < b.Schema
+	}
+	return a.Table < b.Table
 }
 
 func (t *Tracker) computeTableGrowth(dbSizes map[string]*DBSizeSnapshot, elapsed time.Duration) {

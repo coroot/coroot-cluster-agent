@@ -96,6 +96,28 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot
 				snapshot[key] = ddl
 			}
 		}
+		dt.TableStats = nil
+		if dt.SchemaStatsNeeded(snapshot) {
+			stats := dt.collectSchemaStats(ctx, dt.db)
+			for key := range snapshot {
+				ts := stats[key]
+				if ts == nil {
+					ts = schema.TableStats{}
+					stats[key] = ts
+				}
+				cols := columns[key]
+				list := make([]schema.Column, 0, len(cols))
+				for _, col := range cols {
+					c := schema.Column{Name: col.Name, Type: col.Type, Nullable: col.Nullable, Extra: col.Extra}
+					if col.Default.Valid {
+						c.Default = &col.Default.String
+					}
+					list = append(list, c)
+				}
+				ts.SetColumns(list)
+			}
+			dt.TableStats = stats
+		}
 	}
 
 	if dt.trackSizes {
@@ -195,7 +217,7 @@ ORDER BY table_schema, table_name, ordinal_position`)
 func (dt *databaseTracker) queryIndexes(ctx context.Context, db *sql.DB) (map[schema.TableKey][]indexInfo, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT table_schema, table_name, index_name, non_unique,
-       GROUP_CONCAT(column_name ORDER BY seq_in_index)
+       GROUP_CONCAT(COALESCE(column_name, '(expression)') ORDER BY seq_in_index)
 FROM information_schema.statistics
 GROUP BY table_schema, table_name, index_name, non_unique
 ORDER BY table_schema, table_name, index_name`)
