@@ -87,7 +87,7 @@ func (c *Collector) trackSettingsChanges() {
 			ToFile:   "pg_settings",
 			Context:  3,
 		})
-		c.emitter.Emit(schema.Change{
+		c.emitter.EmitChange(schema.Change{
 			Object: "pg_settings",
 			Type:   schema.ChangeTypeChanged,
 			Diff:   diff,

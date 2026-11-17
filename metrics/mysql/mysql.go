@@ -62,7 +62,7 @@ type Collector struct {
 	excludeDatabases map[string]bool
 
 	dbTracker          *databaseTracker
-	emitter            dbtracker.ChangeEmitter
+	emitter            dbtracker.Emitter
 	targetAddr         string
 	prevSettingsText   string
 	isMariaDB          bool
@@ -72,7 +72,7 @@ type Collector struct {
 }
 
 func New(dsn string, logger logger.Logger, scrapeInterval, collectTimeout time.Duration,
-	emitter dbtracker.ChangeEmitter, targetAddr string, maxTablesPerDB int,
+	emitter dbtracker.Emitter, targetAddr string, maxTablesPerDB int,
 	trackSizes bool, excludeDatabases []string) (*Collector, error) {
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
@@ -331,7 +331,7 @@ func (c *Collector) trackSettingsChanges(ctx context.Context) {
 			ToFile:   "global_variables",
 			Context:  3,
 		})
-		c.emitter.Emit(schema.Change{
+		c.emitter.EmitChange(schema.Change{
 			Object: "global_variables",
 			Type:   schema.ChangeTypeChanged,
 			Diff:   diff,

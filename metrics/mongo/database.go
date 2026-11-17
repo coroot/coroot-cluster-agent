@@ -36,6 +36,7 @@ type databaseTracker struct {
 	logger         logger.Logger
 
 	prevWrites map[string]float64
+	indexDefs  map[schema.TableKey][]schema.Index
 }
 
 func newDatabaseTracker(maxTablesPerDB int, trackSchema, trackSizes bool, logger logger.Logger) *databaseTracker {
@@ -85,6 +86,27 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot
 		if snapshot, err = dt.indexes(ctx); err != nil {
 			dt.logger.Warning("failed to get index definitions:", err)
 		}
+		stats := map[schema.TableKey]schema.TableStats{}
+		for _, snap := range dbSizes {
+			for _, t := range snap.Tables {
+				ts := schema.TableStats{}
+				ts.SetInt(schema.AttrRows, int64(t.Documents))
+				ts.SetInt(schema.AttrDataSize, int64(t.StorageSize))
+				if indexesSize := t.Size - t.StorageSize; indexesSize > 0 {
+					ts.SetInt(schema.AttrIndexesSize, int64(indexesSize))
+				}
+				stats[t.TableKey] = ts
+			}
+		}
+		for key, defs := range dt.indexDefs {
+			ts := stats[key]
+			if ts == nil {
+				ts = schema.TableStats{}
+				stats[key] = ts
+			}
+			ts.SetIndexes(defs)
+		}
+		dt.TableStats = stats
 	}
 	return snapshot, dbSizes, nil
 }
@@ -228,6 +250,7 @@ func (dt *databaseTracker) indexes(ctx context.Context) (schema.Snapshot, error)
 			{Key: "md.indexes.ready", Value: 1},
 			{Key: "md.indexes.spec.name", Value: 1},
 			{Key: "md.indexes.spec.key", Value: 1},
+			{Key: "md.indexes.spec.unique", Value: 1},
 		}}},
 	})
 	if err != nil {
@@ -236,6 +259,7 @@ func (dt *databaseTracker) indexes(ctx context.Context) (schema.Snapshot, error)
 	defer cursor.Close(ctx)
 
 	snapshot := schema.Snapshot{}
+	dt.indexDefs = map[schema.TableKey][]schema.Index{}
 	for cursor.Next(ctx) {
 		var coll struct {
 			DB   string `bson:"db"`
@@ -244,8 +268,9 @@ func (dt *databaseTracker) indexes(ctx context.Context) (schema.Snapshot, error)
 				Indexes []struct {
 					Ready bool `bson:"ready"`
 					Spec  struct {
-						Name string `bson:"name"`
-						Key  bson.M `bson:"key"`
+						Name   string        `bson:"name"`
+						Key    bson.D        `bson:"key"`
+						Unique bson.RawValue `bson:"unique"`
 					} `bson:"spec"`
 				} `bson:"indexes"`
 			} `bson:"md"`
@@ -257,19 +282,40 @@ func (dt *databaseTracker) indexes(ctx context.Context) (schema.Snapshot, error)
 			continue
 		}
 		var lines []string
+		var defs []schema.Index
 		for _, idx := range coll.MD.Indexes {
 			if !idx.Ready {
 				continue
 			}
 			fields := make([]string, 0, len(idx.Spec.Key))
-			for k, v := range idx.Spec.Key {
-				fields = append(fields, fmt.Sprintf("%q:%v", k, v))
+			def := schema.Index{Name: idx.Spec.Name, Primary: idx.Spec.Name == "_id_", Unique: rawValueIsTrue(idx.Spec.Unique)}
+			for _, e := range idx.Spec.Key {
+				fields = append(fields, fmt.Sprintf("%q:%v", e.Key, e.Value))
+				def.Columns = append(def.Columns, fmt.Sprintf("%s:%v", e.Key, e.Value))
 			}
 			sort.Strings(fields)
 			lines = append(lines, fmt.Sprintf("INDEX %s: {%s}\n", idx.Spec.Name, strings.Join(fields, ",")))
+			defs = append(defs, def)
 		}
 		sort.Strings(lines)
-		snapshot[schema.TableKey{DB: coll.DB, Table: coll.Name}] = strings.Join(lines, "")
+		key := schema.TableKey{DB: coll.DB, Table: coll.Name}
+		snapshot[key] = strings.Join(lines, "")
+		sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
+		dt.indexDefs[key] = defs
 	}
 	return snapshot, cursor.Err()
+}
+
+func rawValueIsTrue(v bson.RawValue) bool {
+	switch v.Type {
+	case bson.TypeBoolean:
+		return v.Boolean()
+	case bson.TypeInt32:
+		return v.Int32() != 0
+	case bson.TypeInt64:
+		return v.Int64() != 0
+	case bson.TypeDouble:
+		return v.Double() != 0
+	}
+	return false
 }

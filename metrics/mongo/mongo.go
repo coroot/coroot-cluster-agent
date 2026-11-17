@@ -136,13 +136,13 @@ type Collector struct {
 	profilerWindow  []profilerInterval
 
 	dbTracker        *databaseTracker
-	emitter          dbtracker.ChangeEmitter
+	emitter          dbtracker.Emitter
 	targetAddr       string
 	prevSettingsText string
 }
 
 func New(host, username, password string, tlsCreds common.TLSCredentials, params map[string]string, scrapeInterval, collectTimeout time.Duration,
-	logger logger.Logger, emitter dbtracker.ChangeEmitter, targetAddr string,
+	logger logger.Logger, emitter dbtracker.Emitter, targetAddr string,
 	maxTablesPerDB int, trackSizes bool) *Collector {
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
@@ -440,7 +440,7 @@ func (c *Collector) trackSettingsChanges(ctx context.Context) {
 			ToFile:   "parameters",
 			Context:  3,
 		})
-		c.emitter.Emit(schema.Change{
+		c.emitter.EmitChange(schema.Change{
 			Object: "parameters",
 			Type:   schema.ChangeTypeChanged,
 			Diff:   diff,

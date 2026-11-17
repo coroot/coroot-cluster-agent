@@ -49,7 +49,7 @@ type Config struct {
 type Options struct {
 	ScrapeInterval   time.Duration
 	CollectTimeout   time.Duration
-	ChangeEmitter    dbtracker.ChangeEmitter
+	Emitter          dbtracker.Emitter
 	Logs             *common.LogsPipeline
 	MaxTablesPerDB   int
 	TrackSizes       bool
@@ -98,7 +98,7 @@ func New(cfg Config, opts Options, logger logger.Logger) (*Exporter, error) {
 		}
 		query.Set("sslmode", sslmode)
 		dsn := fmt.Sprintf("postgresql://%s@%s/postgres?%s", userPass, cfg.Addr, query.Encode())
-		collector, err := postgres.New(dsn, opts.ScrapeInterval, opts.CollectTimeout, logger, opts.ChangeEmitter, cfg.Addr, opts.MaxTablesPerDB, opts.TrackSizes, opts.TrackBloat, opts.ExcludeDatabases)
+		collector, err := postgres.New(dsn, opts.ScrapeInterval, opts.CollectTimeout, logger, opts.Emitter, cfg.Addr, opts.MaxTablesPerDB, opts.TrackSizes, opts.TrackBloat, opts.ExcludeDatabases)
 		if err != nil {
 			if pqTLSName != "" {
 				_ = pq.RegisterTLSConfig(pqTLSName, nil)
@@ -135,7 +135,7 @@ func New(cfg Config, opts Options, logger logger.Logger) (*Exporter, error) {
 		query.Set("tls", tlsParam)
 		dsn := fmt.Sprintf("%s@tcp(%s)/?%s", userPass, cfg.Addr, query.Encode())
 		collector, err := mysql.New(dsn, logger, opts.ScrapeInterval, opts.CollectTimeout,
-			opts.ChangeEmitter, cfg.Addr, opts.MaxTablesPerDB, opts.TrackSizes, opts.ExcludeDatabases)
+			opts.Emitter, cfg.Addr, opts.MaxTablesPerDB, opts.TrackSizes, opts.ExcludeDatabases)
 		if err != nil {
 			if tlsConfigName != "" {
 				gomysql.DeregisterTLSConfig(tlsConfigName)
@@ -190,7 +190,7 @@ func New(cfg Config, opts Options, logger logger.Logger) (*Exporter, error) {
 			opts.ScrapeInterval,
 			opts.CollectTimeout,
 			logger,
-			opts.ChangeEmitter,
+			opts.Emitter,
 			cfg.Addr,
 			opts.MaxTablesPerDB,
 			opts.TrackSizes,

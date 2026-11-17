@@ -56,8 +56,8 @@ type Metrics struct {
 	k8sPodEvents <-chan k8s.PodEvent
 	ksm          *ksm.KSM
 
-	changeEmitter *emitter.ChangeEmitter
-	logs          *common.LogsPipeline
+	dbEmitter *emitter.Emitter
+	logs      *common.LogsPipeline
 }
 
 func NewMetrics(k8s *k8s.K8S, static *config.Static, logs *common.LogsPipeline) (*Metrics, error) {
@@ -91,7 +91,7 @@ func NewMetrics(k8s *k8s.K8S, static *config.Static, logs *common.LogsPipeline) 
 	}
 
 	if *flags.TrackDatabaseChanges {
-		ms.changeEmitter, err = emitter.NewChangeEmitter(logs)
+		ms.dbEmitter, err = emitter.NewEmitter(logs)
 		if err != nil {
 			return nil, err
 		}
@@ -593,8 +593,8 @@ func (ms *Metrics) exporterOptions() exporter.Options {
 		TrackBloat:       *flags.TrackDatabaseBloat,
 		ExcludeDatabases: *flags.ExcludeDatabases,
 	}
-	if ms.changeEmitter != nil {
-		opts.ChangeEmitter = ms.changeEmitter
+	if ms.dbEmitter != nil {
+		opts.Emitter = ms.dbEmitter
 	}
 	return opts
 }

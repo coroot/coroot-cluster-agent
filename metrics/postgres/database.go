@@ -54,12 +54,13 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot
 	}
 
 	snapshot := schema.Snapshot{}
+	schemaStats := map[schema.TableKey]schema.TableStats{}
 	bloat := map[string]*dbBloat{}
 	tableStats := map[string][]tableStatEntry{}
 	vacuumProgress := map[string][]vacuumProgressEntry{}
 	for _, dbName := range databases {
 		dsn := replaceDatabaseInDSN(dt.baseDSN, dbName)
-		tables, b, stats, vac, err := dt.collectDatabase(ctx, dsn, dbName, snapshot)
+		tables, b, stats, vac, err := dt.collectDatabase(ctx, dsn, dbName, snapshot, schemaStats)
 		if err != nil {
 			dt.logger.Warning("database tracking for", dbName+":", err)
 			continue
@@ -84,10 +85,11 @@ func (dt *databaseTracker) collectSnapshot(ctx context.Context) (schema.Snapshot
 	dt.bloat = bloat
 	dt.tableStats = tableStats
 	dt.vacuumProgress = vacuumProgress
+	dt.TableStats = schemaStats
 	return snapshot, dbSizes, nil
 }
 
-func (dt *databaseTracker) collectDatabase(ctx context.Context, dsn, dbName string, snapshot schema.Snapshot) ([]dbtracker.TableSizeEntry, *dbBloat, []tableStatEntry, []vacuumProgressEntry, error) {
+func (dt *databaseTracker) collectDatabase(ctx context.Context, dsn, dbName string, snapshot schema.Snapshot, schemaStats map[schema.TableKey]schema.TableStats) ([]dbtracker.TableSizeEntry, *dbBloat, []tableStatEntry, []vacuumProgressEntry, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -139,9 +141,34 @@ WHERE c.relkind = 'r'
 			tables[key] = true
 		}
 
+		dbSnapshot := schema.Snapshot{}
 		for key := range tables {
 			ddl := buildDDL(key.Table, columns[key], constraints[key], indexes[key])
-			snapshot[schema.TableKey{DB: dbName, Schema: key.Schema, Table: key.Table}] = ddl
+			key.DB = dbName
+			dbSnapshot[key] = ddl
+			snapshot[key] = ddl
+		}
+		if !dt.SchemaStatsNeeded(dbSnapshot) {
+			columns = nil
+		} else {
+			dt.collectSchemaStats(ctx, db, dbName, schemaStats)
+		}
+		for key, cols := range columns {
+			key.DB = dbName
+			ts := schemaStats[key]
+			if ts == nil {
+				ts = schema.TableStats{}
+				schemaStats[key] = ts
+			}
+			list := make([]schema.Column, 0, len(cols))
+			for _, col := range cols {
+				c := schema.Column{Name: col.Name, Type: col.DataType, Nullable: col.Nullable}
+				if col.Default.Valid {
+					c.Default = &col.Default.String
+				}
+				list = append(list, c)
+			}
+			ts.SetColumns(list)
 		}
 	}
 
